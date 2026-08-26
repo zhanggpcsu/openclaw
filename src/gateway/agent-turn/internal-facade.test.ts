@@ -11,7 +11,10 @@ import { createSyntheticPluginRuntimeClient } from "../server-plugin-runtime-cli
 import { createInternalAgentTurnFacade } from "./internal-facade.js";
 import type { AgentTurnStartOwner } from "./internal-facade.types.js";
 
-const startTurn = vi.hoisted(() => vi.fn());
+const { startTurn, waitForTurn } = vi.hoisted(() => ({
+  startTurn: vi.fn(),
+  waitForTurn: vi.fn(),
+}));
 const authorize = vi.hoisted(() => vi.fn(async () => ({ error: null })));
 const envelope = vi.hoisted(() => vi.fn(async (run: () => Promise<unknown>) => await run()));
 
@@ -34,7 +37,7 @@ vi.mock("./agent-request-preflight.js", () => ({
 vi.mock("./agent-turn-service.js", () => ({
   createAgentTurnService: () => ({
     startTurn,
-    waitForTurn: vi.fn(),
+    waitForTurn,
   }),
 }));
 
@@ -64,6 +67,7 @@ describe("createInternalAgentTurnFacade", () => {
   beforeEach(() => {
     resetAgentEventsForTest();
     startTurn.mockReset();
+    waitForTurn.mockReset();
     authorize.mockReset().mockResolvedValue({ error: null });
     envelope.mockReset().mockImplementation(async (run) => await run());
   });
@@ -189,6 +193,45 @@ describe("createInternalAgentTurnFacade", () => {
       error: undefined,
       meta: { cached: true, runId: "run-2" },
     });
+  });
+
+  it("reattaches an in-flight replay and returns its full terminal dedupe result", async () => {
+    const terminalResult = {
+      payloads: [],
+      meta: { yielded: true },
+      acceptedSessionSpawns: [{ runId: "run-child", childSessionKey: "agent:main:subagent:child" }],
+    };
+    startTurn
+      .mockImplementationOnce(async ({ io }) => {
+        io.emitAcceptance([true, { runId: "run-replay", status: "in_flight" }, undefined], {
+          cached: true,
+          runId: "run-replay",
+        });
+      })
+      .mockImplementationOnce(async ({ io }) => {
+        io.emitAcceptance([
+          true,
+          { runId: "run-replay", status: "ok", result: terminalResult },
+          undefined,
+        ]);
+      });
+    waitForTurn.mockResolvedValue({ runId: "run-replay", status: "ok" });
+
+    await expect(
+      createFacade().dispatchRaw(
+        { message: "test", idempotencyKey: "same-request" },
+        { expectFinal: true, timeoutMs: 1_000 },
+      ),
+    ).resolves.toMatchObject({
+      ok: true,
+      payload: { runId: "run-replay", status: "ok", result: terminalResult },
+    });
+    expect(waitForTurn).toHaveBeenCalledWith({ runId: "run-replay", timeoutMs: 1_000 });
+    expect(startTurn).toHaveBeenCalledTimes(2);
+    expect(startTurn.mock.calls.map(([call]) => call.preflight.request.idempotencyKey)).toEqual([
+      "same-request",
+      "same-request",
+    ]);
   });
 
   it("passes the exact internal execution-start observer to the turn", async () => {
