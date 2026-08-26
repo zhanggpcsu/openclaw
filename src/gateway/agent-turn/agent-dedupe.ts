@@ -32,6 +32,7 @@ export function readGatewayDedupeEntry(params: {
 
 export function isAcceptedAgentDedupePayload(payload: unknown): payload is {
   acceptedAt?: unknown;
+  admitted?: unknown;
   agentId?: unknown;
   dedupeKeys?: unknown;
   expiresAtMs?: unknown;
@@ -165,6 +166,7 @@ export function replayAgentTurnIfCached(params: {
     const cachedAgentId = normalizeOptionalString(cached.payload.agentId);
     const cachedRuntime = asOptionalRecord(cached.payload.runtime);
     const admissionPending = typeof cached.payload.reservationId === "string";
+    const cachedAdmitted = cached.payload.admitted === true;
     params.io.emitAcceptance(
       [
         true,
@@ -175,6 +177,7 @@ export function replayAgentTurnIfCached(params: {
           ...(cachedAgentId ? { agentId: cachedAgentId } : {}),
           ...(cachedRuntime ? { runtime: cachedRuntime } : {}),
           ...(admissionPending ? { admissionPending: true } : {}),
+          ...(cachedAdmitted ? { admitted: true } : {}),
         },
         undefined,
       ],
