@@ -5028,6 +5028,17 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
       expected: deliveredRequesterFinal,
     },
     {
+      name: "retains an ordinary non-yielded settle turn while it is still in flight",
+      response: { runId: "run-requester-pending", status: "in_flight" },
+      requireVisibleReply: false,
+      expected: {
+        delivered: false,
+        path: "direct",
+        reason: "completion_handoff_pending",
+        disposition: "retryable",
+      },
+    },
+    {
       name: "accepts a yielded requester's visible final answer",
       recordsVisibleFinal: true,
       routes: requesterSettleRoutes.slice(1),

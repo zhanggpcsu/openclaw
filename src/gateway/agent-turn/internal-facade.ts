@@ -9,8 +9,10 @@ import { abortChatRunById, type ChatAbortControllerEntry } from "../chat-abort.j
 import type { GatewayMethodRegistry } from "../methods/registry.js";
 import {
   type GatewayMethodDispatchResponse,
+  resolveGatewayDispatchDeadlineMs,
+  resolveRemainingGatewayDispatchTimeoutMs,
   throwIfGatewayDispatchAborted,
-  waitForGatewayDispatch,
+  waitForGatewayDispatchDeadline,
   unwrapGatewayMethodDispatchResponse,
 } from "../server-in-process-dispatch.js";
 import {
@@ -50,9 +52,9 @@ export function createInternalAgentTurnFacade(
   const isWebchatConnect = options.isWebchatConnect ?? (() => false);
   const getMethodRegistry = options.getMethodRegistry ?? createRequestGatewayMethodRegistry;
 
-  const wait = async <T = unknown>(
+  const waitUntil = async <T = unknown>(
     params: AgentWaitParams,
-    timeoutMs?: number,
+    deadlineMs?: number,
     signal?: AbortSignal,
     onSignalAbort?: () => Promise<void> | void,
   ): Promise<T> => {
@@ -86,8 +88,22 @@ export function createInternalAgentTurnFacade(
         reject: (error) => throwEnvelopeRejection(method, error),
       },
     );
-    return (await waitForGatewayDispatch(method, result, timeoutMs, signal, onSignalAbort)) as T;
+    return (await waitForGatewayDispatchDeadline(
+      method,
+      result,
+      deadlineMs,
+      signal,
+      onSignalAbort,
+    )) as T;
   };
+
+  const wait = async <T = unknown>(
+    params: AgentWaitParams,
+    timeoutMs?: number,
+    signal?: AbortSignal,
+    onSignalAbort?: () => Promise<void> | void,
+  ): Promise<T> =>
+    await waitUntil(params, resolveGatewayDispatchDeadlineMs(timeoutMs), signal, onSignalAbort);
 
   const dispatchRaw = async (
     request: AgentRunRequest,
@@ -97,6 +113,8 @@ export function createInternalAgentTurnFacade(
     throwIfGatewayDispatchAborted(method, dispatchOptions.signal);
     dispatchOptions.assertAdmissionCurrent?.();
     options.assertContextCurrent?.();
+    const deadlineMs =
+      dispatchOptions.deadlineMs ?? resolveGatewayDispatchDeadlineMs(dispatchOptions.timeoutMs);
     const context = options.getContext();
     const lifecycleGeneration = getAgentEventLifecycleGeneration();
     const {
@@ -317,7 +335,15 @@ export function createInternalAgentTurnFacade(
         },
       );
     const response = (async () => {
-      const first = acceptance ?? (await acceptancePromise);
+      const first =
+        acceptance ??
+        (await waitForGatewayDispatchDeadline(
+          method,
+          acceptancePromise,
+          deadlineMs,
+          dispatchOptions.signal,
+          dispatchOptions.onSignalAbort,
+        ));
       const firstPayload = first.payload as { runId?: unknown; status?: unknown } | undefined;
       if (dispatchOptions.expectFinal !== true) {
         return first;
@@ -328,10 +354,10 @@ export function createInternalAgentTurnFacade(
         if (!runId) {
           return first;
         }
-        const timeoutMs = dispatchOptions.timeoutMs;
-        const waitResult = await wait<{ endedAt?: unknown; status?: unknown }>(
-          { runId, ...(timeoutMs !== undefined ? { timeoutMs } : {}) },
-          undefined,
+        const remainingTimeoutMs = resolveRemainingGatewayDispatchTimeoutMs(deadlineMs);
+        const waitResult = await waitUntil<{ endedAt?: unknown; status?: unknown }>(
+          { runId, ...(remainingTimeoutMs !== undefined ? { timeoutMs: remainingTimeoutMs } : {}) },
+          deadlineMs,
           dispatchOptions.signal,
           dispatchOptions.onSignalAbort,
         );
@@ -344,8 +370,9 @@ export function createInternalAgentTurnFacade(
         // The terminal dedupe payload retains the full result needed by callers;
         // agent.wait is only the liveness rendezvous for the already-admitted run.
         return await dispatchRaw(request, {
+          deadlineMs,
+          onSignalAbort: dispatchOptions.onSignalAbort,
           signal: dispatchOptions.signal,
-          timeoutMs,
         });
       }
       if (firstPayload?.status !== "accepted") {
@@ -355,7 +382,16 @@ export function createInternalAgentTurnFacade(
       if (postAcceptanceError) {
         throw postAcceptanceError;
       }
-      return final ?? (await createFinalPromise());
+      return (
+        final ??
+        (await waitForGatewayDispatchDeadline(
+          method,
+          createFinalPromise(),
+          deadlineMs,
+          dispatchOptions.signal,
+          dispatchOptions.onSignalAbort,
+        ))
+      );
     })();
     return await waitForGatewayDispatch(
       method,
