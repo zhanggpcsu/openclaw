@@ -118,7 +118,11 @@ function hasNonEmptyArray(value: unknown): boolean {
   return Array.isArray(value) && value.length > 0;
 }
 
-function hasAcceptedSessionSpawnEvidence(value: unknown): boolean {
+function hasNonEmptyStringArray(value: unknown): boolean {
+  return Array.isArray(value) && value.some(hasNonEmptyString);
+}
+
+export function hasAcceptedSessionSpawnEvidence(value: unknown): boolean {
   return Array.isArray(value)
     ? value.some((entry) => {
         const spawn = asOptionalRecord(entry);
