@@ -323,16 +323,24 @@ export function createInternalAgentTurnFacade(
         return first;
       }
       if (firstPayload?.status === "in_flight") {
+        dispatchOptions.onAccepted?.(first.payload);
         const runId = typeof firstPayload.runId === "string" ? firstPayload.runId.trim() : "";
         if (!runId) {
           return first;
         }
         const timeoutMs = dispatchOptions.timeoutMs;
-        await wait(
+        const waitResult = await wait<{ endedAt?: unknown; status?: unknown }>(
           { runId, ...(timeoutMs !== undefined ? { timeoutMs } : {}) },
-          timeoutMs,
+          undefined,
           dispatchOptions.signal,
+          dispatchOptions.onSignalAbort,
         );
+        const waitReachedNonterminalDeadline =
+          waitResult.status === "pending" ||
+          (waitResult.status === "timeout" && typeof waitResult.endedAt !== "number");
+        if (waitReachedNonterminalDeadline) {
+          return first;
+        }
         // The terminal dedupe payload retains the full result needed by callers;
         // agent.wait is only the liveness rendezvous for the already-admitted run.
         return await dispatchRaw(request, {
@@ -354,27 +362,19 @@ export function createInternalAgentTurnFacade(
       response,
       dispatchOptions.timeoutMs,
       dispatchOptions.signal,
-      dispatchOptions.onSignalAbort,
-    );
-
-      return await waitForGatewayDispatch(
-        method,
-        response,
-        dispatchOptions.timeoutMs,
-        dispatchOptions.signal,
-        dispatchOptions.cancelOnDeadline || dispatchOptions.onSignalAbort
-          ? async () => {
-              if (dispatchOptions.cancelOnDeadline) {
-                cancelAcceptedRun("rpc");
-              }
-              await dispatchOptions.onSignalAbort?.();
+      dispatchOptions.cancelOnDeadline || dispatchOptions.onSignalAbort
+        ? async () => {
+            if (dispatchOptions.cancelOnDeadline) {
+              cancelAcceptedRun("rpc");
             }
-          : undefined,
-        dispatchOptions.cancelOnDeadline ? () => cancelAcceptedRun("timeout") : undefined,
-      );
-    } finally {
-      entry?.release();
-    }
+            await dispatchOptions.onSignalAbort?.();
+          }
+        : undefined,
+      dispatchOptions.cancelOnDeadline ? () => cancelAcceptedRun("timeout") : undefined,
+    );
+  } finally {
+    entry?.release();
+  }
   };
 
   const dispatch = async <T = unknown>(
