@@ -37,6 +37,7 @@ export type AgentDeliveryEvidence = {
   messagingToolSentTargetsTruncated?: unknown;
   acceptedSessionSpawns?: unknown;
   requesterContinuationSettled?: unknown;
+  runtimeContinuationStarted?: unknown;
   successfulCronAdds?: unknown;
   meta?: {
     yielded?: unknown;

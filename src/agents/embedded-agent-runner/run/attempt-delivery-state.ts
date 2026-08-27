@@ -18,5 +18,6 @@ export function copyAttemptDeliveryState(attempt: EmbeddedRunAttemptResult) {
     acceptedSessionSpawns: attempt.acceptedSessionSpawns,
     ...(hasAsyncActivity(attempt.toolMetas) ? { asyncWorkStarted: true as const } : {}),
     requesterContinuationSettled: attempt.requesterContinuationSettled,
+    runtimeContinuationStarted: attempt.runtimeContinuationStarted,
   };
 }
