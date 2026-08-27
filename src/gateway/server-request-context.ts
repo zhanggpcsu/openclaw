@@ -49,6 +49,7 @@ type GatewayRequestContextRuntime = Pick<
   | "systemAgentApprovalManager"
   | "loadGatewayModelCatalog"
   | "loadGatewayModelCatalogSnapshot"
+  | "loadPublishedGatewayReplyDispatchRuntime"
   | "readPreparedGatewayModelCatalog"
   | "getRuntimeSnapshot"
   | "broadcast"
@@ -281,6 +282,12 @@ export function createGatewayRequestContext(
     listSessionPendingApprovals: runtime.approvalSessionEvents.replay,
     loadGatewayModelCatalog: runtime.loadGatewayModelCatalog,
     loadGatewayModelCatalogSnapshot: runtime.loadGatewayModelCatalogSnapshot,
+    ...(runtime.loadPublishedGatewayReplyDispatchRuntime
+      ? {
+          loadPublishedGatewayReplyDispatchRuntime:
+            runtime.loadPublishedGatewayReplyDispatchRuntime,
+        }
+      : {}),
     ...(runtime.readPreparedGatewayModelCatalog
       ? { readPreparedGatewayModelCatalog: runtime.readPreparedGatewayModelCatalog }
       : {}),

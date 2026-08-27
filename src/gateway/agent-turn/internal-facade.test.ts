@@ -1,12 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { dispatchRestartRecoveryUntilStarted } from "../../agents/main-session-recovery/main-session-restart-dispatch-start.js";
 import {
+  getAgentEventLifecycleGeneration,
   resetAgentEventsForTest,
   rotateAgentEventLifecycleGeneration,
 } from "../../infra/agent-events.js";
 import { trackAsyncWork } from "../../shared/async-work-scope.js";
 import { registerChatAbortController } from "../chat-abort.js";
 import { createChatRunState } from "../server-chat-state.js";
-import { dispatchRestartRecoveryUntilStarted } from "../../agents/main-session-recovery/main-session-restart-dispatch-start.js";
 import type { GatewayRecoveryRuntime } from "../server-instance-runtime.types.js";
 import type { GatewayRequestContext } from "../server-methods/types.js";
 import { createSyntheticPluginRuntimeClient } from "../server-plugin-runtime-client.js";
@@ -200,6 +201,49 @@ describe("createInternalAgentTurnFacade", () => {
     }
   });
 
+  it.each([
+    {
+      method: "agent",
+      invoke: () =>
+        createFacade().dispatchRaw(
+          { message: "test", idempotencyKey: "run-authorization-at-deadline" },
+          { timeoutMs: 1_000 },
+        ),
+      work: startTurn,
+    },
+    {
+      method: "agent.wait",
+      invoke: () => createFacade().wait({ runId: "run-wait-authorization-at-deadline" }, 1_000),
+      work: waitForTurn,
+    },
+  ])("rejects $method when authorization resolves at its deadline", async (testCase) => {
+    vi.useFakeTimers();
+    authorizeGatewayRequestPreDispatch.mockImplementationOnce(
+      async () =>
+        await new Promise<{ error: null }>((resolve) => {
+          setTimeout(() => resolve({ error: null }), 1_000);
+        }),
+    );
+
+    try {
+      const outcome = testCase.invoke().then(
+        () => ({ status: "resolved" as const }),
+        (error: unknown) => ({ error, status: "rejected" as const }),
+      );
+
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      await expect(outcome).resolves.toMatchObject({
+        status: "rejected",
+        error: { message: `gateway request timeout for ${testCase.method}` },
+      });
+      expect(testCase.work).not.toHaveBeenCalled();
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
   it("rejects agent.wait when its context retires while the wait is pending", async () => {
     let releaseWait!: (result: { runId: string; status: "ok" }) => void;
     waitForTurn.mockImplementationOnce(
@@ -223,7 +267,8 @@ describe("createInternalAgentTurnFacade", () => {
     releaseWait({ runId: "run-retired-during-wait", status: "ok" });
 
     await expect(result).rejects.toThrow("retired gateway context");
-    expect(assertContextCurrent).toHaveBeenCalledTimes(2);
+    // Entry-lifetime guard, post-validation guard, and post-await guard.
+    expect(assertContextCurrent).toHaveBeenCalledTimes(3);
   });
 
   it("preserves accepted/final ordering and acceptance metadata without frames", async () => {
@@ -524,25 +569,35 @@ describe("createInternalAgentTurnFacade", () => {
 
   it("lets restart recovery abort the exact cached run before reattachment completes", async () => {
     vi.useFakeTimers();
+    const context = createContext();
+    const lifecycleGeneration = getAgentEventLifecycleGeneration();
+    let registration: ReturnType<typeof registerChatAbortController> | undefined;
     startTurn.mockImplementation(async ({ io }) => {
+      registration = registerChatAbortController({
+        chatAbortControllers: context.chatAbortControllers,
+        runId: "recovery-cached",
+        agentId: "main",
+        sessionId: "recovery-session",
+        sessionKey: "agent:main:main",
+        lifecycleGeneration,
+        kind: "agent",
+        timeoutMs: 60_000,
+      });
       io.emitAcceptance([true, { runId: "recovery-cached", status: "in_flight" }, undefined], {
         cached: true,
         runId: "recovery-cached",
       });
     });
     waitForTurn.mockImplementation(async () => await new Promise<never>(() => {}));
-    const facade = createFacade();
-    const abortAgent = vi.fn<GatewayRecoveryRuntime["abortAgent"]>(async () => ({
-      aborted: true,
-    }));
+    const facade = createFacade({ getContext: () => context });
     const gatewayRuntime: GatewayRecoveryRuntime = {
-      abortAgent,
       dispatchAgent: async (request, timeoutMs, options) =>
         await facade.dispatch(request, {
           expectFinal: options?.expectFinal,
           onAccepted: options?.onAccepted,
           onExecutionStarted: options?.onExecutionStarted,
           onSignalAbort: options?.onSignalAbort,
+          onStartOwner: options?.onStartOwner,
           signal: options?.signal,
           timeoutMs,
         }),
@@ -552,20 +607,20 @@ describe("createInternalAgentTurnFacade", () => {
 
     try {
       const outcome = dispatchRestartRecoveryUntilStarted({
-        agentId: "main",
         agentParams: {
           agentId: "main",
+          expectedExistingSessionId: "recovery-session",
           idempotencyKey: "recovery-cached",
           message: "resume",
           sessionKey: "agent:main:main",
         },
         gatewayRuntime,
-        recoveryRunId: "recovery-cached",
-        sessionKey: "agent:main:main",
       });
 
       await vi.waitFor(() => expect(startTurn).toHaveBeenCalledOnce());
-      await vi.advanceTimersByTimeAsync(10_000);
+      // The registration keeps the platform minimum run TTL, so the recovery
+      // observation window reschedules until that expiry before aborting.
+      await vi.advanceTimersByTimeAsync(130_000);
 
       await expect(outcome).resolves.toMatchObject({
         kind: "failed",
@@ -576,14 +631,7 @@ describe("createInternalAgentTurnFacade", () => {
           preStartAbortConfirmed: true,
         },
       });
-      expect(abortAgent).toHaveBeenCalledWith(
-        {
-          agentId: "main",
-          runId: "recovery-cached",
-          sessionKey: "agent:main:main",
-        },
-        2_000,
-      );
+      expect(registration?.controller.signal.aborted).toBe(true);
     } finally {
       vi.useRealTimers();
     }
@@ -742,7 +790,7 @@ describe("createInternalAgentTurnFacade", () => {
     });
 
     try {
-      const result = createFacade(context).dispatchRaw(
+      const result = createFacade({ getContext: () => context }).dispatchRaw(
         {
           message: "settle requester",
           sessionKey: "agent:main:deadline",
@@ -785,7 +833,7 @@ describe("createInternalAgentTurnFacade", () => {
     });
 
     try {
-      const result = createFacade(context).dispatchRaw(
+      const result = createFacade({ getContext: () => context }).dispatchRaw(
         {
           message: "settle requester",
           sessionKey: "agent:main:late",

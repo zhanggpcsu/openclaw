@@ -13,6 +13,8 @@ import {
   resolveGatewayDispatchDeadlineMs,
   resolveRemainingGatewayDispatchTimeoutMs,
   throwIfGatewayDispatchAborted,
+  throwIfGatewayDispatchDeadlineExpired,
+  waitForGatewayDispatch,
   waitForGatewayDispatchDeadline,
   unwrapGatewayMethodDispatchResponse,
 } from "../server-in-process-dispatch.js";
@@ -77,6 +79,7 @@ export function createInternalAgentTurnFacade(
       signal,
       onSignalAbort,
     );
+    throwIfGatewayDispatchDeadlineExpired(method, deadlineMs);
     if (authorization.error) {
       return throwEnvelopeRejection(method, authorization.error);
     }
@@ -106,14 +109,6 @@ export function createInternalAgentTurnFacade(
     options.assertContextCurrent?.();
     return response;
   };
-
-  const wait = async <T = unknown>(
-    params: AgentWaitParams,
-    timeoutMs?: number,
-    signal?: AbortSignal,
-    onSignalAbort?: () => Promise<void> | void,
-  ): Promise<T> =>
-    await waitUntil(params, resolveGatewayDispatchDeadlineMs(timeoutMs), signal, onSignalAbort);
 
   const dispatchRaw = async (
     request: AgentRunRequest,
@@ -153,6 +148,7 @@ export function createInternalAgentTurnFacade(
         dispatchOptions.signal,
         dispatchOptions.onSignalAbort,
       );
+      throwIfGatewayDispatchDeadlineExpired(method, deadlineMs);
       entry?.assertOpen();
       if (authorization.error) {
         return { ok: false, error: authorization.error };
@@ -350,96 +346,85 @@ export function createInternalAgentTurnFacade(
           rejectAcceptance?.(dispatchError);
         },
       );
-    const response = (async () => {
-      const first =
-        acceptance ??
-        (await waitForGatewayDispatchDeadline(
-          method,
-          acceptancePromise,
-          deadlineMs,
-          dispatchOptions.signal,
-          dispatchOptions.onSignalAbort,
-        ));
-      const firstPayload = first.payload as { runId?: unknown; status?: unknown } | undefined;
-      if (dispatchOptions.expectFinal !== true) {
-        return first;
-      }
-      if (firstPayload?.status === "in_flight") {
-        dispatchOptions.onAccepted?.(first.payload);
-        const runId = typeof firstPayload.runId === "string" ? firstPayload.runId.trim() : "";
-        if (!runId) {
+      const response = (async () => {
+        // The outer waitForGatewayDispatch below owns the request deadline for
+        // this phase so its cancel-on-deadline hook still runs; wrapping this
+        // await in its own deadline timer would fire first and starve that hook.
+        const first = acceptance ?? (await acceptancePromise);
+        const firstPayload = first.payload as { runId?: unknown; status?: unknown } | undefined;
+        if (dispatchOptions.expectFinal !== true) {
           return first;
         }
-        const remainingTimeoutMs = resolveRemainingGatewayDispatchTimeoutMs(deadlineMs);
-        const waitResult = await waitUntil<{ endedAt?: unknown; status?: unknown }>(
-          { runId, ...(remainingTimeoutMs !== undefined ? { timeoutMs: remainingTimeoutMs } : {}) },
-          deadlineMs,
-          dispatchOptions.signal,
-          dispatchOptions.onSignalAbort,
-        );
-        const waitReachedNonterminalDeadline =
-          waitResult.status === "pending" ||
-          (waitResult.status === "timeout" && typeof waitResult.endedAt !== "number");
-        if (waitReachedNonterminalDeadline) {
-          return first;
-        }
-        const dedupeTimeoutMs = resolveRemainingGatewayDispatchTimeoutMs(deadlineMs) ?? 30_000;
-        const terminalDedupe = await waitForGatewayDispatchDeadline(
-          method,
-          waitForAgentTerminalDedupe({ runId, timeoutMs: dedupeTimeoutMs }),
-          deadlineMs,
-          dispatchOptions.signal,
-          dispatchOptions.onSignalAbort,
-        );
-        options.assertContextCurrent?.();
-        if (!terminalDedupe) {
-          throw createGatewayDispatchTimeoutError(method);
-        }
-        // The terminal dedupe payload retains the full result needed by callers;
-        // agent.wait is the liveness rendezvous; the owner signal above makes
-        // the terminal response atomically ready for the canonical replay.
-        return await dispatchRaw(request, {
-          deadlineMs,
-          onSignalAbort: dispatchOptions.onSignalAbort,
-          signal: dispatchOptions.signal,
-        });
-      }
-      if (firstPayload?.status !== "accepted") {
-        return first;
-      }
-      dispatchOptions.onAccepted?.(first.payload);
-      if (postAcceptanceError) {
-        throw postAcceptanceError;
-      }
-      return (
-        final ??
-        (await waitForGatewayDispatchDeadline(
-          method,
-          createFinalPromise(),
-          deadlineMs,
-          dispatchOptions.signal,
-          dispatchOptions.onSignalAbort,
-        ))
-      );
-    })();
-    return await waitForGatewayDispatch(
-      method,
-      response,
-      dispatchOptions.timeoutMs,
-      dispatchOptions.signal,
-      dispatchOptions.cancelOnDeadline || dispatchOptions.onSignalAbort
-        ? async () => {
-            if (dispatchOptions.cancelOnDeadline) {
-              cancelAcceptedRun("rpc");
-            }
-            await dispatchOptions.onSignalAbort?.();
+        if (firstPayload?.status === "in_flight") {
+          dispatchOptions.onAccepted?.(first.payload);
+          const runId = typeof firstPayload.runId === "string" ? firstPayload.runId.trim() : "";
+          if (!runId) {
+            return first;
           }
-        : undefined,
-      dispatchOptions.cancelOnDeadline ? () => cancelAcceptedRun("timeout") : undefined,
-    );
-  } finally {
-    entry?.release();
-  }
+          const remainingTimeoutMs = resolveRemainingGatewayDispatchTimeoutMs(deadlineMs);
+          const waitResult = await waitUntil<{ endedAt?: unknown; status?: unknown }>(
+            {
+              runId,
+              ...(remainingTimeoutMs !== undefined ? { timeoutMs: remainingTimeoutMs } : {}),
+            },
+            deadlineMs,
+            dispatchOptions.signal,
+            dispatchOptions.onSignalAbort,
+          );
+          const waitReachedNonterminalDeadline =
+            waitResult.status === "pending" ||
+            (waitResult.status === "timeout" && typeof waitResult.endedAt !== "number");
+          if (waitReachedNonterminalDeadline) {
+            return first;
+          }
+          const dedupeTimeoutMs = resolveRemainingGatewayDispatchTimeoutMs(deadlineMs) ?? 30_000;
+          const terminalDedupe = await waitForGatewayDispatchDeadline(
+            method,
+            waitForAgentTerminalDedupe({ runId, timeoutMs: dedupeTimeoutMs }),
+            deadlineMs,
+            dispatchOptions.signal,
+            dispatchOptions.onSignalAbort,
+          );
+          options.assertContextCurrent?.();
+          if (!terminalDedupe) {
+            throw createGatewayDispatchTimeoutError(method);
+          }
+          // The terminal dedupe payload retains the full result needed by callers;
+          // agent.wait is the liveness rendezvous; the owner signal above makes
+          // the terminal response atomically ready for the canonical replay.
+          return await dispatchRaw(request, {
+            deadlineMs,
+            onSignalAbort: dispatchOptions.onSignalAbort,
+            signal: dispatchOptions.signal,
+          });
+        }
+        if (firstPayload?.status !== "accepted") {
+          return first;
+        }
+        dispatchOptions.onAccepted?.(first.payload);
+        if (postAcceptanceError) {
+          throw postAcceptanceError;
+        }
+        return final ?? (await createFinalPromise());
+      })();
+      return await waitForGatewayDispatch(
+        method,
+        response,
+        dispatchOptions.timeoutMs,
+        dispatchOptions.signal,
+        dispatchOptions.cancelOnDeadline || dispatchOptions.onSignalAbort
+          ? async () => {
+              if (dispatchOptions.cancelOnDeadline) {
+                cancelAcceptedRun("rpc");
+              }
+              await dispatchOptions.onSignalAbort?.();
+            }
+          : undefined,
+        dispatchOptions.cancelOnDeadline ? () => cancelAcceptedRun("timeout") : undefined,
+      );
+    } finally {
+      entry?.release();
+    }
   };
 
   const dispatch = async <T = unknown>(
@@ -470,15 +455,23 @@ export function createInternalAgentTurnFacade(
       context,
     });
     try {
+      const deadlineMs = resolveGatewayDispatchDeadlineMs(timeoutMs);
       const methodRegistry = getMethodRegistry();
-      const authorization = await authorizeGatewayRequestPreDispatch({
+      const authorization = await waitForGatewayDispatchDeadline(
         method,
-        requestParams: params,
-        client: options.client,
-        context,
-        methodRegistry,
-      });
+        authorizeGatewayRequestPreDispatch({
+          method,
+          requestParams: params,
+          client: options.client,
+          context,
+          methodRegistry,
+        }),
+        deadlineMs,
+        signal,
+        onSignalAbort,
+      );
       entry?.assertOpen();
+      throwIfGatewayDispatchDeadlineExpired(method, deadlineMs);
       if (authorization.error) {
         return throwEnvelopeRejection(method, authorization.error);
       }
@@ -504,7 +497,15 @@ export function createInternalAgentTurnFacade(
           },
         ),
       );
-      return (await waitForGatewayDispatch(method, result, timeoutMs, signal, onSignalAbort)) as T;
+      const response = (await waitForGatewayDispatchDeadline(
+        method,
+        result,
+        deadlineMs,
+        signal,
+        onSignalAbort,
+      )) as T;
+      options.assertContextCurrent?.();
+      return response;
     } finally {
       entry?.release();
     }

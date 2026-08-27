@@ -63,6 +63,13 @@ export function createGatewayDispatchTimeoutError(method: string): Error {
   return new Error(`gateway request timeout for ${method}`);
 }
 
+/** Rejects a phase that resolved at or after the shared request deadline. */
+export function throwIfGatewayDispatchDeadlineExpired(method: string, deadlineMs?: number): void {
+  if (deadlineMs !== undefined && Date.now() >= deadlineMs) {
+    throw createGatewayDispatchTimeoutError(method);
+  }
+}
+
 function resolveDispatchAbortError(method: string, signal: AbortSignal): Error {
   return signal.reason instanceof Error
     ? signal.reason
@@ -137,7 +144,7 @@ export async function waitForGatewayDispatch<T>(
   onSignalAbort?: () => Promise<void> | void,
   onTimeout?: () => void,
 ): Promise<T> {
-  return await waitForDispatch(
+  return await waitForGatewayDispatchDeadline(
     method,
     promise,
     resolveGatewayDispatchDeadlineMs(timeoutMs),

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { loadPublishedGatewayReplyDispatchRuntime } from "../agents/prepared-model-runtime.js";
 import { isNixMode, resolveIsConfigReadOnly } from "../config/paths.js";
 import { clearGatewayAgentCliShim } from "../infra/openclaw-cli-shim.js";
 import { ensureOpenClawCliOnPath } from "../infra/path-env.js";
@@ -207,6 +208,7 @@ export async function createGatewayKernel(
         loadGatewayModelCatalog,
         loadGatewayModelCatalogSnapshot,
         readPreparedGatewayModelCatalog,
+        loadPublishedGatewayReplyDispatchRuntime,
       }),
     );
     if (!options.deferEarlyRuntime) {
