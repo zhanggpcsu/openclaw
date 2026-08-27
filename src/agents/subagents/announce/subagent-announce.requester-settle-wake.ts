@@ -549,11 +549,7 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
       state = { ...state, lastError };
       // The Gateway still owns the admitted turn. Keep the frozen dispatch key
       // until terminal dedupe proves whether it replied or yielded more work.
-      deferRequesterSettleWakeBatch({
-        batchRunIds,
-        state,
-        transitionBatch: params.transitionBatch,
-      });
+      deferBatch(state);
       logWarn(
         `requester settle wake is still in flight; replaying the same idempotency key in ${Math.round(REQUESTER_SETTLE_WAKE_RETRY_DELAYS_MS[0] / 1000)}s: ${lastError}`,
       );
