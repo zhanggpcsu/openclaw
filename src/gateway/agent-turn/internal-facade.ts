@@ -8,6 +8,7 @@ import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { abortChatRunById, type ChatAbortControllerEntry } from "../chat-abort.js";
 import type { GatewayMethodRegistry } from "../methods/registry.js";
 import {
+  createGatewayDispatchTimeoutError,
   type GatewayMethodDispatchResponse,
   resolveGatewayDispatchDeadlineMs,
   resolveRemainingGatewayDispatchTimeoutMs,
@@ -380,7 +381,7 @@ export function createInternalAgentTurnFacade(
         );
         options.assertContextCurrent?.();
         if (!terminalDedupe) {
-          return first;
+          throw createGatewayDispatchTimeoutError(method);
         }
         // The terminal dedupe payload retains the full result needed by callers;
         // agent.wait is the liveness rendezvous; the owner signal above makes
