@@ -64,13 +64,19 @@ export function createInternalAgentTurnFacade(
     throwIfGatewayDispatchAborted(method, signal);
     const context = options.getContext();
     const methodRegistry = getMethodRegistry();
-    const authorization = await authorizeGatewayRequestPreDispatch({
+    const authorization = await waitForGatewayDispatchDeadline(
       method,
-      requestParams: params,
-      client: options.client,
-      context,
-      methodRegistry,
-    });
+      authorizeGatewayRequestPreDispatch({
+        method,
+        requestParams: params,
+        client: options.client,
+        context,
+        methodRegistry,
+      }),
+      deadlineMs,
+      signal,
+      onSignalAbort,
+    );
     if (authorization.error) {
       return throwEnvelopeRejection(method, authorization.error);
     }
@@ -134,13 +140,19 @@ export function createInternalAgentTurnFacade(
     });
     try {
       const methodRegistry = getMethodRegistry();
-      const authorization = await authorizeGatewayRequestPreDispatch({
+      const authorization = await waitForGatewayDispatchDeadline(
         method,
-        requestParams: request,
-        client: options.client,
-        context,
-        methodRegistry,
-      });
+        authorizeGatewayRequestPreDispatch({
+          method,
+          requestParams: request,
+          client: options.client,
+          context,
+          methodRegistry,
+        }),
+        deadlineMs,
+        dispatchOptions.signal,
+        dispatchOptions.onSignalAbort,
+      );
       entry?.assertOpen();
       if (authorization.error) {
         return { ok: false, error: authorization.error };
