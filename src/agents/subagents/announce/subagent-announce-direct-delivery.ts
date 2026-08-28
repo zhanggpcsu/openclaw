@@ -483,38 +483,37 @@ export async function sendSubagentAnnounceDirectly(params: {
     if (isGatewayAgentRunPending(directAnnounceResponse)) {
       const directAnnounceStatus = directAnnounceResponse.status;
       if (
-        !params.requireVisibleReply &&
-        params.expectsCompletionMessage &&
         directAnnounceStatus === "in_flight" &&
+        typeof directAnnounceResponse.runId === "string" &&
         directAnnounceResponse.admitted !== true
       ) {
-        // A pre-admission reservation blocks duplicate dispatch but does not own
-        // delivery yet. Avoid fallback injection while retaining the durable retry.
+        if (!params.requireVisibleReply && params.expectsCompletionMessage) {
+          // A pre-admission reservation blocks duplicate dispatch but does not own
+          // delivery yet. Avoid fallback injection while retaining the durable retry.
+          return {
+            delivered: false,
+            path: "direct",
+            reason: "completion_handoff_pending",
+            error: "requester agent admission is still pending",
+            disposition: "ambiguous",
+          };
+        }
+        // A tracked in-flight replay still owes terminal evidence; defer the wake
+        // instead of recording a final the admitted run has not produced yet.
         return {
           delivered: false,
           path: "direct",
           reason: "completion_handoff_pending",
-          error: "requester agent admission is still pending",
-          disposition: "ambiguous",
+          error: "requester agent run is still in flight",
+          disposition: "retryable",
         };
       }
-      // An admitted ordinary completion handoff already owns the prompt;
-      // fallback steering would inject it twice. Settle wakes still need terminal evidence on replay.
-      if (
-        !params.requireVisibleReply &&
-        (params.expectsCompletionMessage || directAnnounceStatus === "accepted")
-      ) {
-        return {
-          delivered: true,
-          path: "direct",
-        };
-      }
+      // An accepted or admitted handoff owns the prompt even when the caller
+      // asked for a visible reply; the missing visible final is recorded on the
+      // result instead of steering a duplicate injection.
       return {
-        delivered: false,
+        delivered: true,
         path: "direct",
-        reason: "completion_handoff_pending",
-        error: "requester agent run is still in flight",
-        disposition: "retryable",
       };
     }
 
@@ -529,6 +528,23 @@ export async function sendSubagentAnnounceDirectly(params: {
       directAnnounceResult &&
       hasMessagingToolDeliveryToSource(directAnnounceResult, deliveryTarget),
     );
+    const hasYieldedContinuation = Boolean(
+      directAnnounceResult &&
+      directAnnounceResult.meta?.yielded === true &&
+      !directAnnounceResult.meta.error &&
+      !directAnnounceResult.meta.aborted &&
+      // Production results only carry requesterContinuationSettled when the core
+      // settled the yield; a projected-but-unsettled key means the continuation
+      // is unproven and must not be acknowledged here.
+      !("requesterContinuationSettled" in directAnnounceResult) &&
+      (directAnnounceResult.runtimeContinuationStarted === true ||
+        hasAcceptedSessionSpawnEvidence(directAnnounceResult.acceptedSessionSpawns)),
+    );
+    if (hasYieldedContinuation) {
+      // The runtime owns the accepted next wave. This wake is complete even
+      // though the resumed requester correctly withheld its terminal reply.
+      return { delivered: true, path: "direct" };
+    }
     const requiresAutomaticFinalReceipt =
       shouldDeliverAgentFinal && (params.expectsCompletionMessage || params.requireVisibleReply);
     const automaticEvidence = getAutomaticDeliveryEvidence(directAnnounceResult ?? {});
@@ -548,17 +564,6 @@ export async function sendSubagentAnnounceDirectly(params: {
         error: directDeliveryFailure,
         ...(automaticEvidence.mayHaveSent ? { disposition: "ambiguous" as const } : {}),
       };
-    }
-    const hasYieldedContinuation = Boolean(
-      directAnnounceResult &&
-      directAnnounceResult.meta?.yielded === true &&
-      (directAnnounceResult.runtimeContinuationStarted === true ||
-        hasAcceptedSessionSpawnEvidence(directAnnounceResult.acceptedSessionSpawns)),
-    );
-    if (hasYieldedContinuation) {
-      // The runtime owns the accepted next wave. This wake is complete even
-      // though the resumed requester correctly withheld its terminal reply.
-      return { delivered: true, path: "direct" };
     }
     const completionPayloadVisibility = {
       includeErrorPayloads: false,
