@@ -5,13 +5,17 @@ import {
   buildEmbeddedRunnerAssistant,
   makeEmbeddedRunnerAttempt,
 } from "../../test-helpers/embedded-agent-runner-e2e-fixtures.js";
+import { copyAttemptDeliveryState } from "./attempt-delivery-state.js";
 import {
   markEmbeddedRunAuthProfileSuccess,
   reportEmbeddedRunSuccessfulAuthBinding,
 } from "./auth-profile-success.js";
 import { TRUNCATED_REPLY_NOTICE_TEXT } from "./incomplete-turn-resolution.js";
 import { resolveEmbeddedRunAttemptTerminalState } from "./terminal-outcome.js";
-import { resolveEmbeddedRunTerminal } from "./terminal-resolution.js";
+import {
+  createTerminalToolPresentationTracker,
+  resolveEmbeddedRunTerminal,
+} from "./terminal-resolution.js";
 import {
   emptyAssistant,
   makeTerminalInput,
