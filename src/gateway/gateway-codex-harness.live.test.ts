@@ -464,8 +464,8 @@ function buildCodexCompactionAppServerArgs(mode: CodexCompactionStressMode): str
             // Raw nested CodeMode output is not necessarily emitted to model context.
             `model_auto_compact_token_limit=${CODEX_REDUCED_CONTEXT_AUTO_COMPACT_LIMIT}`,
             "tool_output_token_limit=10000",
-        ]
-      : undefined;
+          ]
+        : undefined;
   const openAiBaseUrl = process.env.OPENAI_BASE_URL?.trim();
   if (openAiBaseUrl) {
     return buildCodexHarnessAppServerArgs([
