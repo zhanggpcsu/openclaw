@@ -207,6 +207,7 @@ vi.mock("../../agents/prepared-model-runtime.js", () => ({
   acquireAgentRunPreparedModelRuntime: vi.fn(async () => ({
     release: vi.fn(),
     snapshot: {},
+    pluginGeneration: { pluginMetadataSnapshot: {} },
   })),
   loadPublishedGatewayReplyDispatchRuntime: async ({ agentId }: { agentId: string }) => ({
     agentId,
@@ -413,6 +414,13 @@ export const makeContext = (): GatewayRequestContext =>
     broadcastToConnIds: vi.fn(),
     getSessionEventSubscriberConnIds: () => new Set(),
     getRuntimeConfig: () => resolveAgentTestConfig(),
+    loadPublishedGatewayReplyDispatchRuntime: async ({ agentId }: { agentId: string }) => ({
+      agentId,
+      agentDir: "/tmp/agent",
+      config: resolveAgentTestConfig(),
+      pluginGeneration: { pluginMetadataSnapshot: {} },
+      workspaceDir: "/tmp/workspace",
+    }),
   }) as unknown as GatewayRequestContext;
 
 type AgentHandler = NonNullable<typeof agentHandlers.agent>;
