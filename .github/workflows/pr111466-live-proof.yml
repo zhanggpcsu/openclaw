@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
-      EXPECTED_HEAD: f0aa941c0bba0ba0a65f196477bba674a945bec6
+      EXPECTED_HEAD: c9ace2eef9b87ca346b0b3af34433e802bef2808
       PR_BRANCH: proof/pr-130563-native-runtime-rebased
       PROVIDER_PORT: "19653"
 
