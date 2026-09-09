@@ -61,7 +61,7 @@ jobs:
               node -e 'const p=require("./package.json"); process.stdout.write(p.packageManager || "")'
           )"
           case "$package_manager" in
-            pnpm@12.1.0+sha512.*) ;;
+            pnpm@12.3.4+sha512.*) ;;
             *) echo "::error::Unexpected packageManager: $package_manager"; exit 1 ;;
           esac
 
@@ -167,7 +167,7 @@ jobs:
           const proofDir = process.env.PROOF_DIR;
           const actionPath = proofDir + "/provider-actions.jsonl";
           const requestPath = proofDir + "/provider-requests.jsonl";
-          // Codex 0.151.0 defaults to V1 multi-agent and keeps deferred tools registered
+          // Codex 0.153.4 defaults to V1 multi-agent and keeps deferred tools registered
           // even when the model request omits tool metadata. Prefer a live advertised
           // contract below when one exists; otherwise use the inspected pinned contract.
           const pinnedSpawnTool = {
@@ -184,7 +184,7 @@ jobs:
                 service_tier: {},
               },
             },
-            source: "codex-0.151.0-default-v1-contract",
+            source: "codex-0.153.4-default-v1-contract",
           };
           const state = {
             waveOne: null,
@@ -697,7 +697,7 @@ jobs:
             CI=1 \
             TMPDIR="$proof_tmp" \
             "$codex_bin" --version >"$proof_dir/codex-version.txt"
-          grep -F "0.151.0" "$proof_dir/codex-version.txt"
+          grep -F "0.153.4" "$proof_dir/codex-version.txt"
 
           app_server_args="app-server --listen stdio:// -c 'openai_base_url=\"$provider_url\"'"
           set +e
@@ -836,7 +836,7 @@ jobs:
             nativeSpawnContracts.length === 2 &&
             nativeSpawnContracts.every((contract) => contract?.name === "spawn_agent") &&
             unexpected.length === 0 &&
-            codexVersion.includes("0.151.0");
+            codexVersion.includes("0.153.4");
           const verdict = {
             ok,
             validationSha: process.env.EXPECTED_HEAD,
