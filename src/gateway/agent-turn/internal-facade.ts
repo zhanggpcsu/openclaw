@@ -14,7 +14,6 @@ import {
   resolveRemainingGatewayDispatchTimeoutMs,
   throwIfGatewayDispatchAborted,
   throwIfGatewayDispatchDeadlineExpired,
-  waitForGatewayDispatch,
   waitForGatewayDispatchDeadline,
   unwrapGatewayMethodDispatchResponse,
 } from "../server-in-process-dispatch.js";
@@ -347,7 +346,7 @@ export function createInternalAgentTurnFacade(
         },
       );
       const response = (async () => {
-        // The outer waitForGatewayDispatch below owns the request deadline for
+        // The outer deadline wait below owns the request deadline for
         // this phase so its cancel-on-deadline hook still runs; wrapping this
         // await in its own deadline timer would fire first and starve that hook.
         const first = acceptance ?? (await acceptancePromise);
@@ -394,6 +393,7 @@ export function createInternalAgentTurnFacade(
           // the terminal response atomically ready for the canonical replay.
           return await dispatchRaw(request, {
             deadlineMs,
+            expectFinal: true,
             onSignalAbort: dispatchOptions.onSignalAbort,
             signal: dispatchOptions.signal,
           });
@@ -407,10 +407,10 @@ export function createInternalAgentTurnFacade(
         }
         return final ?? (await createFinalPromise());
       })();
-      return await waitForGatewayDispatch(
+      return await waitForGatewayDispatchDeadline(
         method,
         response,
-        dispatchOptions.timeoutMs,
+        deadlineMs,
         dispatchOptions.signal,
         dispatchOptions.cancelOnDeadline || dispatchOptions.onSignalAbort
           ? async () => {
