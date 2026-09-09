@@ -1,4 +1,4 @@
-name: PR 111466 Live Teams Proof
+name: PR 130563 Native Runtime Proof
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
 permissions: {}
 
 concurrency:
-  group: pr-111466-live-teams-proof
+  group: pr-130563-native-runtime-proof
   cancel-in-progress: false
 
 jobs:
@@ -14,336 +14,938 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
-      CI: "1"
-      EXPECTED_HEAD: eafd1ac0dee66615b6866b3e11a3674d5b094a0e
-      PR_BRANCH: fix/teams-meetings-reused-tab-listen-probe
-      MEETING_URL: ${{ vars.PR111466_MEETING_URL }}
-      PROOF_PORT: "19766"
+      EXPECTED_HEAD: 95f06d15f828759c5727c230922c15d15ad5880d
+      PR_BRANCH: proof/pr-130563-native-runtime-rebased
+      PROVIDER_PORT: "19653"
 
     steps:
       - name: Setup Node.js
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "24"
 
-      - name: Clone exact contributor head without credentials
+      - name: Clone exact contributor head anonymously
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -z "$MEETING_URL" ]]; then
-            echo "::error::PR111466_MEETING_URL is not configured"
-            exit 1
-          fi
-          echo "::add-mask::$MEETING_URL"
           git init openclaw
           cd openclaw
           git remote add origin https://github.com/zhangguiping-xydt/openclaw.git
           git fetch --depth=1 origin "$PR_BRANCH"
           git checkout --detach FETCH_HEAD
           actual_head="$(git rev-parse HEAD)"
-          echo "Exact PR head: $actual_head"
+          echo "Validation SHA: $actual_head"
           test "$actual_head" = "$EXPECTED_HEAD"
 
-      - name: Install pinned dependencies
+      - name: Install pinned dependencies without inherited credentials
         shell: bash
         working-directory: openclaw
         run: |
           set -euo pipefail
-          export XDG_CACHE_HOME="$RUNNER_TEMP/cache"
-          export COREPACK_HOME="$XDG_CACHE_HOME/corepack"
-          export PNPM_HOME="$RUNNER_TEMP/pnpm-home"
-          mkdir -p "$XDG_CACHE_HOME" "$COREPACK_HOME" "$PNPM_HOME"
-          export PATH="$PNPM_HOME:$PATH"
-          package_manager="$(node -e 'const p=require("./package.json"); process.stdout.write(p.packageManager || "")')"
+          proof_dir="$RUNNER_TEMP/pr130563-native-proof"
+          proof_home="$proof_dir/home"
+          proof_tmp="$proof_dir/tmp"
+          cache_home="$proof_dir/cache"
+          corepack_home="$cache_home/corepack"
+          pnpm_home="$proof_dir/pnpm-home"
+          mkdir -p "$proof_home" "$proof_tmp" "$cache_home" "$corepack_home" "$pnpm_home"
+          safe_path="$pnpm_home:$PATH"
+
+          package_manager="$(
+            env -i \
+              HOME="$proof_home" \
+              PATH="$safe_path" \
+              CI=1 \
+              TMPDIR="$proof_tmp" \
+              XDG_CACHE_HOME="$cache_home" \
+              node -e 'const p=require("./package.json"); process.stdout.write(p.packageManager || "")'
+          )"
           case "$package_manager" in
-            pnpm@*) ;;
+            pnpm@12.1.0+sha512.*) ;;
             *) echo "::error::Unexpected packageManager: $package_manager"; exit 1 ;;
           esac
-          corepack enable --install-directory "$PNPM_HOME"
-          corepack prepare "$package_manager" --activate
-          pnpm install --frozen-lockfile --prefer-offline
 
-      - name: Run reused-tab Teams listening proof
-        id: live-proof
+          env -i \
+            HOME="$proof_home" \
+            PATH="$safe_path" \
+            CI=1 \
+            TMPDIR="$proof_tmp" \
+            XDG_CACHE_HOME="$cache_home" \
+            COREPACK_HOME="$corepack_home" \
+            PNPM_HOME="$pnpm_home" \
+            corepack enable --install-directory "$pnpm_home"
+          env -i \
+            HOME="$proof_home" \
+            PATH="$safe_path" \
+            CI=1 \
+            TMPDIR="$proof_tmp" \
+            XDG_CACHE_HOME="$cache_home" \
+            COREPACK_HOME="$corepack_home" \
+            PNPM_HOME="$pnpm_home" \
+            corepack prepare "$package_manager" --activate
+
+          env -i \
+            HOME="$proof_home" \
+            PATH="$safe_path" \
+            CI=1 \
+            TMPDIR="$proof_tmp" \
+            XDG_CACHE_HOME="$cache_home" \
+            COREPACK_HOME="$corepack_home" \
+            PNPM_HOME="$pnpm_home" \
+            PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN=false \
+            pnpm_config_verify_deps_before_run=false \
+            node -e '
+              const forbidden = Object.keys(process.env).filter((name) =>
+                /^(?:GITHUB_TOKEN|GH_TOKEN|ACTIONS_RUNTIME_TOKEN|ACTIONS_ID_TOKEN_REQUEST_TOKEN|OPENAI_API_KEY|CODEX_API_KEY)$/u.test(name),
+              );
+              if (forbidden.length) {
+                throw new Error("credential-bearing install environment: " + forbidden.join(","));
+              }
+            '
+
+          set +e
+          env -i \
+            HOME="$proof_home" \
+            PATH="$safe_path" \
+            CI=1 \
+            TMPDIR="$proof_tmp" \
+            XDG_CACHE_HOME="$cache_home" \
+            COREPACK_HOME="$corepack_home" \
+            PNPM_HOME="$pnpm_home" \
+            PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN=false \
+            pnpm_config_verify_deps_before_run=false \
+            pnpm install --frozen-lockfile --prefer-offline \
+              >"$proof_dir/install.raw.log" 2>&1
+          install_status=$?
+          set -e
+          if [[ "$install_status" -ne 0 ]]; then
+            tail -n 200 "$proof_dir/install.raw.log"
+            exit "$install_status"
+          fi
+
+      - name: Run exact-head Gateway and Codex native two-wave proof
+        id: native-proof
         shell: bash
         working-directory: openclaw
         run: |
           set -euo pipefail
-          echo "::add-mask::$MEETING_URL"
+          proof_dir="$RUNNER_TEMP/pr130563-native-proof"
+          proof_home="$proof_dir/home"
+          proof_tmp="$proof_dir/tmp"
+          cache_home="$proof_dir/cache"
+          corepack_home="$cache_home/corepack"
+          pnpm_home="$proof_dir/pnpm-home"
+          safe_path="$pnpm_home:$PATH"
+          provider_url="http://127.0.0.1:$PROVIDER_PORT/v1"
+          dummy_key="openclaw-pr130563-localhost-proof"
+          codex_bin="$PWD/node_modules/.bin/codex"
+          mkdir -p "$proof_dir" "$proof_home" "$proof_tmp" "$cache_home"
 
-          proof_dir="$RUNNER_TEMP/pr111466-proof"
-          state_dir="$proof_dir/state"
-          config_file="$proof_dir/openclaw.json"
-          mkdir -p "$state_dir"
-
-          xvfb_pid=""
-          chrome_pid=""
-          gateway_pid=""
+          provider_pid=""
           cleanup() {
-            for pid in "$gateway_pid" "$chrome_pid" "$xvfb_pid"; do
-              if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
-                kill "$pid" 2>/dev/null || true
-              fi
-            done
+            if [[ -n "$provider_pid" ]] && kill -0 "$provider_pid" 2>/dev/null; then
+              kill "$provider_pid" 2>/dev/null || true
+              wait "$provider_pid" 2>/dev/null || true
+            fi
           }
           trap cleanup EXIT
 
-          Xvfb :99 -screen 0 1440x900x24 >"$proof_dir/xvfb.log" 2>&1 &
-          xvfb_pid=$!
-          export DISPLAY=:99
+          env -i \
+            HOME="$proof_home" \
+            PATH="$safe_path" \
+            CI=1 \
+            TMPDIR="$proof_tmp" \
+            PROVIDER_PORT="$PROVIDER_PORT" \
+            PROVIDER_KEY="$dummy_key" \
+            PROOF_DIR="$proof_dir" \
+            node --input-type=module >"$proof_dir/provider.raw.log" 2>&1 <<'NODE' &
+          import { appendFileSync, writeFileSync } from "node:fs";
+          import http from "node:http";
 
-          chrome_bin="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium || true)"
-          if [[ -z "$chrome_bin" ]]; then
-            echo "::error::Chrome/Chromium is unavailable"
-            exit 1
-          fi
-          echo "Browser binary: $chrome_bin"
-          "$chrome_bin" \
-            --no-sandbox \
-            --disable-dev-shm-usage \
-            --disable-gpu \
-            --no-first-run \
-            --no-default-browser-check \
-            --disable-search-engine-choice-screen \
-            --remote-debugging-address=127.0.0.1 \
-            --remote-debugging-port=9222 \
-            --user-data-dir="$RUNNER_TEMP/pr111466-chrome" \
-            --use-fake-ui-for-media-stream \
-            --use-fake-device-for-media-stream \
-            --autoplay-policy=no-user-gesture-required \
-            about:blank >"$proof_dir/chrome.log" 2>&1 &
-          chrome_pid=$!
+          const port = Number(process.env.PROVIDER_PORT);
+          const expectedAuth = "Bearer " + process.env.PROVIDER_KEY;
+          const proofDir = process.env.PROOF_DIR;
+          const actionPath = proofDir + "/provider-actions.jsonl";
+          const requestPath = proofDir + "/provider-requests.jsonl";
+          // Codex 0.151.0 defaults to V1 multi-agent and keeps deferred tools registered
+          // even when the model request omits tool metadata. Prefer a live advertised
+          // contract below when one exists; otherwise use the inspected pinned contract.
+          const pinnedSpawnTool = {
+            name: "spawn_agent",
+            namespace: "multi_agent_v1",
+            parameters: {
+              properties: {
+                agent_type: {},
+                fork_context: {},
+                items: {},
+                message: {},
+                model: {},
+                reasoning_effort: {},
+                service_tier: {},
+              },
+            },
+            source: "codex-0.151.0-default-v1-contract",
+          };
+          const state = {
+            waveOne: null,
+            waveTwo: null,
+            parent: null,
+            waveOneReleased: false,
+            waveTwoStarted: false,
+            waveTwoReleased: false,
+            parentFinalSent: false,
+            spawnTool: pinnedSpawnTool,
+            searchCall: "call_search_spawn_agent",
+            spawnOneCall: "call_spawn_wave_1",
+            yieldOneCall: "call_yield_wave_1",
+            spawnTwoCall: "call_spawn_wave_2",
+            yieldTwoCall: "call_yield_wave_2",
+          };
+          const heldReplies = new Map();
+          const releasedTokens = new Set();
+          let requestNumber = 0;
 
-          cdp_ready=0
+          function appendJson(path, value) {
+            appendFileSync(path, JSON.stringify(value) + "\n", { encoding: "utf8" });
+          }
+
+          function collectStrings(value, output = []) {
+            if (typeof value === "string") {
+              output.push(value);
+              return output;
+            }
+            if (Array.isArray(value)) {
+              for (const entry of value) collectStrings(entry, output);
+              return output;
+            }
+            if (value && typeof value === "object") {
+              for (const entry of Object.values(value)) collectStrings(entry, output);
+            }
+            return output;
+          }
+
+          function findCallId(value) {
+            if (Array.isArray(value)) {
+              for (const entry of value) {
+                const found = findCallId(entry);
+                if (found) return found;
+              }
+              return null;
+            }
+            if (!value || typeof value !== "object") return null;
+            if (typeof value.call_id === "string") return value.call_id;
+            for (const entry of Object.values(value)) {
+              const found = findCallId(entry);
+              if (found) return found;
+            }
+            return null;
+          }
+
+          function toolSpecs(body) {
+            const specs = [];
+            if (Array.isArray(body.tools)) specs.push(...body.tools);
+            const input = Array.isArray(body.input) ? body.input : [];
+            for (const item of input) {
+              if (item?.type === "tool_search_output" && Array.isArray(item.tools)) {
+                specs.push(...item.tools);
+              }
+            }
+            return specs;
+          }
+
+          function findSpawnTool(body) {
+            for (const spec of toolSpecs(body)) {
+              if (spec?.type === "function" && spec.name === "spawn_agent") {
+                return {
+                  name: spec.name,
+                  namespace: null,
+                  parameters: spec.parameters ?? {},
+                  source: "function",
+                };
+              }
+              if (spec?.type !== "namespace" || !Array.isArray(spec.tools)) continue;
+              const child = spec.tools.find(
+                (tool) => tool?.type === "function" && tool.name === "spawn_agent",
+              );
+              if (child) {
+                return {
+                  name: child.name,
+                  namespace: spec.name,
+                  parameters: child.parameters ?? {},
+                  source: "namespace",
+                };
+              }
+            }
+            return null;
+          }
+
+          function summarizedTools(body) {
+            return toolSpecs(body)
+              .slice(0, 30)
+              .map((spec) => ({
+                type: typeof spec?.type === "string" ? spec.type : "unknown",
+                name: typeof spec?.name === "string" ? spec.name : null,
+                children: Array.isArray(spec?.tools)
+                  ? spec.tools
+                      .slice(0, 30)
+                      .map((tool) => (typeof tool?.name === "string" ? tool.name : "unknown"))
+                  : [],
+              }));
+          }
+
+          function spawnArguments(spawnTool, taskName, message) {
+            const properties = spawnTool?.parameters?.properties;
+            const args = { message };
+            if (properties && Object.hasOwn(properties, "task_name")) args.task_name = taskName;
+            return args;
+          }
+
+          function spawnToolSummary(spawnTool) {
+            return {
+              name: spawnTool.name,
+              namespace: spawnTool.namespace,
+              source: spawnTool.source,
+              argumentNames: Object.keys(spawnTool.parameters?.properties ?? {}).sort(),
+            };
+          }
+
+          function completed(id) {
+            return {
+              type: "response.completed",
+              response: {
+                id,
+                usage: {
+                  input_tokens: 0,
+                  input_tokens_details: null,
+                  output_tokens: 0,
+                  output_tokens_details: null,
+                  total_tokens: 0,
+                },
+              },
+            };
+          }
+
+          function created(id) {
+            return { type: "response.created", response: { id } };
+          }
+
+          function assistant(id, text) {
+            return {
+              type: "response.output_item.done",
+              item: {
+                type: "message",
+                id: "msg_" + id,
+                role: "assistant",
+                content: [{ type: "output_text", text }],
+              },
+            };
+          }
+
+          function functionCall(id, callId, name, args, namespace) {
+            const item = {
+              type: "function_call",
+              call_id: callId,
+              name,
+              arguments: JSON.stringify(args),
+            };
+            if (namespace) item.namespace = namespace;
+            return { type: "response.output_item.done", item };
+          }
+
+          function toolSearchCall(callId) {
+            return {
+              type: "response.output_item.done",
+              item: {
+                type: "tool_search_call",
+                call_id: callId,
+                execution: "client",
+                arguments: { query: "spawn agent", limit: 1 },
+              },
+            };
+          }
+
+          function sendEvents(response, events) {
+            response.writeHead(200, {
+              "content-type": "text/event-stream; charset=utf-8",
+              "cache-control": "no-cache",
+              connection: "close",
+            });
+            for (const event of events) {
+              response.write("event: " + event.type + "\n");
+              response.write("data: " + JSON.stringify(event) + "\n\n");
+            }
+            response.end();
+          }
+
+          function releaseHeldReply(token) {
+            const held = heldReplies.get(token);
+            if (!held) {
+              releasedTokens.add(token);
+              appendJson(actionPath, {
+                action:
+                  token === state.waveOne
+                    ? "release_wave_1_after_yield_pending"
+                    : "release_wave_2_after_yield_pending",
+                requestNumber,
+              });
+              return;
+            }
+            heldReplies.delete(token);
+            if (token === state.waveOne) state.waveOneReleased = true;
+            if (token === state.waveTwo) state.waveTwoReleased = true;
+            appendJson(actionPath, {
+              action:
+                token === state.waveOne
+                  ? "release_wave_1_after_yield"
+                  : "release_wave_2_after_yield",
+              requestNumber,
+            });
+            sendEvents(held.response, held.events);
+          }
+
+          function chooseResponse(body) {
+            requestNumber += 1;
+            const responseId = "resp_" + requestNumber;
+            const input = Array.isArray(body.input) ? body.input : [];
+            const latest = input.length ? input[input.length - 1] : {};
+            const latestText = collectStrings(latest).join("\n");
+            const latestType =
+              latest && typeof latest === "object" && typeof latest.type === "string"
+                ? latest.type
+                : "unknown";
+            const callId = findCallId(latest);
+            const advertisedSpawnTool = findSpawnTool(body);
+            if (advertisedSpawnTool) state.spawnTool = advertisedSpawnTool;
+            let route = "unexpected";
+            let events;
+            let holdToken = null;
+            let releaseToken = null;
+
+            if (callId === state.searchCall && state.waveOne) {
+              if (!state.spawnTool) {
+                throw new Error("tool_search did not return an advertised spawn_agent contract");
+              }
+              route = "spawn_wave_1";
+              appendJson(actionPath, {
+                action: route,
+                requestNumber,
+                spawnTool: spawnToolSummary(state.spawnTool),
+              });
+              events = [
+                created(responseId),
+                functionCall(
+                  responseId,
+                  state.spawnOneCall,
+                  state.spawnTool.name,
+                  spawnArguments(
+                    state.spawnTool,
+                    "wave_one",
+                    "Reply exactly " + state.waveOne + " and nothing else.",
+                  ),
+                  state.spawnTool.namespace,
+                ),
+                completed(responseId),
+              ];
+            } else if (callId === state.spawnOneCall) {
+              route = "yield_wave_1";
+              releaseToken = state.waveOne;
+              appendJson(actionPath, { action: route, requestNumber });
+              events = [
+                created(responseId),
+                functionCall(
+                  responseId,
+                  state.yieldOneCall,
+                  "sessions_yield",
+                  { message: "Wave 1 child is running." },
+                  "openclaw_direct",
+                ),
+                completed(responseId),
+              ];
+            } else if (callId === state.spawnTwoCall) {
+              route = "yield_wave_2";
+              releaseToken = state.waveTwo;
+              appendJson(actionPath, { action: route, requestNumber });
+              events = [
+                created(responseId),
+                functionCall(
+                  responseId,
+                  state.yieldTwoCall,
+                  "sessions_yield",
+                  { message: "Wave 2 child is running." },
+                  "openclaw_direct",
+                ),
+                completed(responseId),
+              ];
+            } else if (callId === state.yieldOneCall || callId === state.yieldTwoCall) {
+              route = "yield_followup_empty";
+              events = [created(responseId), completed(responseId)];
+            } else if (
+              state.waveTwoReleased &&
+              state.waveTwoStarted &&
+              !state.parentFinalSent &&
+              !callId
+            ) {
+              route = "parent_final";
+              state.parentFinalSent = true;
+              const finalReply = state.parent + " " + state.waveOne + " " + state.waveTwo;
+              appendJson(actionPath, { action: route, finalReply, requestNumber });
+              events = [created(responseId), assistant(responseId, finalReply), completed(responseId)];
+            } else if (
+              state.waveOneReleased &&
+              !state.waveTwoStarted &&
+              !callId
+            ) {
+              route = "spawn_wave_2";
+              state.waveTwoStarted = true;
+              if (!state.spawnTool) throw new Error("spawn_agent contract was not retained");
+              appendJson(actionPath, {
+                action: route,
+                requestNumber,
+                spawnTool: spawnToolSummary(state.spawnTool),
+              });
+              events = [
+                created(responseId),
+                functionCall(
+                  responseId,
+                  state.spawnTwoCall,
+                  state.spawnTool.name,
+                  spawnArguments(
+                    state.spawnTool,
+                    "wave_two",
+                    "Reply exactly " + state.waveTwo + " and nothing else.",
+                  ),
+                  state.spawnTool.namespace,
+                ),
+                completed(responseId),
+              ];
+            } else if (!state.waveOne && latestText.includes("Sequential native bridge probe.")) {
+              const waveOne = latestText.match(/CODEX-NATIVE-WAVE-1-[A-Z0-9]{6}/u)?.[0];
+              const waveTwo = latestText.match(/CODEX-NATIVE-WAVE-2-[A-Z0-9]{6}/u)?.[0];
+              const parent = latestText.match(/CODEX-NATIVE-PARENT-[A-Z0-9]{6}/u)?.[0];
+              if (!waveOne || !waveTwo || !parent) {
+                throw new Error("native parent prompt is missing randomized proof tokens");
+              }
+              state.waveOne = waveOne;
+              state.waveTwo = waveTwo;
+              state.parent = parent;
+              if (state.spawnTool) {
+                route = "spawn_wave_1";
+                appendJson(actionPath, {
+                  action: route,
+                  parent,
+                  requestNumber,
+                  spawnTool: spawnToolSummary(state.spawnTool),
+                  waveOne,
+                  waveTwo,
+                });
+                events = [
+                  created(responseId),
+                  functionCall(
+                    responseId,
+                    state.spawnOneCall,
+                    state.spawnTool.name,
+                    spawnArguments(
+                      state.spawnTool,
+                      "wave_one",
+                      "Reply exactly " + state.waveOne + " and nothing else.",
+                    ),
+                    state.spawnTool.namespace,
+                  ),
+                  completed(responseId),
+                ];
+              } else if (
+                toolSpecs(body).some((tool) => tool?.type === "tool_search")
+              ) {
+                route = "search_spawn_tool";
+                appendJson(actionPath, { action: route, requestNumber });
+                events = [created(responseId), toolSearchCall(state.searchCall), completed(responseId)];
+              } else {
+                throw new Error("Responses request advertised neither spawn_agent nor tool_search");
+              }
+            } else {
+              const exactToken =
+                latestText.match(
+                  /Reply (?:with )?exactly ([A-Z][A-Z0-9-]{3,}) and nothing else\.?/u,
+                )?.[1] ?? null;
+              if (exactToken) {
+                route = "exact_reply";
+                events = [
+                  created(responseId),
+                  assistant(responseId, exactToken),
+                  completed(responseId),
+                ];
+                if (exactToken === state.waveOne || exactToken === state.waveTwo) {
+                  route = exactToken === state.waveOne ? "hold_wave_1" : "hold_wave_2";
+                  holdToken = exactToken;
+                  appendJson(actionPath, { action: route, requestNumber });
+                }
+              }
+            }
+
+            appendJson(requestPath, {
+              advertisedTools: summarizedTools(body),
+              callId: callId ?? null,
+              latestType,
+              outputPreview:
+                latestType.endsWith("_output")
+                  ? collectStrings(latest).join("\n").slice(0, 1_000)
+                  : null,
+              requestNumber,
+              route,
+              spawnTool: state.spawnTool ? spawnToolSummary(state.spawnTool) : null,
+            });
+            if (!events) {
+              appendJson(actionPath, {
+                action: "unexpected",
+                latestType,
+                requestNumber,
+              });
+              throw new Error("unexpected Responses request " + requestNumber);
+            }
+            return { events, holdToken, releaseToken };
+          }
+
+          const server = http.createServer((request, response) => {
+            if (request.method !== "POST" || request.url !== "/v1/responses") {
+              response.writeHead(404, { "content-type": "application/json" });
+              response.end(JSON.stringify({ error: { message: "not found" } }));
+              return;
+            }
+            if (request.headers.authorization !== expectedAuth) {
+              response.writeHead(401, { "content-type": "application/json" });
+              response.end(JSON.stringify({ error: { message: "invalid proof credential" } }));
+              return;
+            }
+            let raw = "";
+            request.setEncoding("utf8");
+            request.on("data", (chunk) => {
+              raw += chunk;
+              if (raw.length > 32 * 1024 * 1024) request.destroy();
+            });
+            request.on("end", () => {
+              try {
+                const outcome = chooseResponse(JSON.parse(raw));
+                if (outcome.holdToken) {
+                  if (heldReplies.has(outcome.holdToken)) {
+                    throw new Error("duplicate held child reply for " + outcome.holdToken);
+                  }
+                  if (releasedTokens.delete(outcome.holdToken)) {
+                    if (outcome.holdToken === state.waveOne) state.waveOneReleased = true;
+                    if (outcome.holdToken === state.waveTwo) state.waveTwoReleased = true;
+                    appendJson(actionPath, {
+                      action:
+                        outcome.holdToken === state.waveOne
+                          ? "release_wave_1_after_yield_and_arrival"
+                          : "release_wave_2_after_yield_and_arrival",
+                      requestNumber,
+                    });
+                    sendEvents(response, outcome.events);
+                    return;
+                  }
+                  heldReplies.set(outcome.holdToken, { response, events: outcome.events });
+                  return;
+                }
+                sendEvents(response, outcome.events);
+                if (outcome.releaseToken) releaseHeldReply(outcome.releaseToken);
+              } catch (error) {
+                appendJson(actionPath, {
+                  action: "provider_error",
+                  message: error instanceof Error ? error.message : String(error),
+                  requestNumber,
+                });
+                response.writeHead(422, { "content-type": "application/json" });
+                response.end(JSON.stringify({ error: { message: "unmatched proof request" } }));
+              }
+            });
+          });
+
+          server.listen(port, "127.0.0.1", () => {
+            writeFileSync(proofDir + "/provider.ready", String(port), "utf8");
+            console.log("deterministic provider listening on 127.0.0.1:" + port);
+          });
+          NODE
+          provider_pid=$!
+
+          ready=0
           for _ in $(seq 1 60); do
-            if curl --noproxy '*' --max-time 1 -fsS http://127.0.0.1:9222/json/version >/dev/null; then
-              cdp_ready=1
+            if [[ -s "$proof_dir/provider.ready" ]] &&
+              curl --noproxy '*' --max-time 1 -fsS \
+                -X POST \
+                -H "Authorization: Bearer $dummy_key" \
+                -H "Content-Type: application/json" \
+                --data '{"input":[]}' \
+                "http://127.0.0.1:$PROVIDER_PORT/not-responses" >/dev/null 2>&1; then
+              ready=1
+              break
+            fi
+            if [[ -s "$proof_dir/provider.ready" ]] && kill -0 "$provider_pid" 2>/dev/null; then
+              ready=1
               break
             fi
             sleep 1
           done
-          if [[ "$cdp_ready" != "1" ]]; then
-            echo "::error::Chrome CDP did not become ready"
+          if [[ "$ready" != "1" ]]; then
+            echo "::error::Deterministic provider did not become ready"
+            tail -n 120 "$proof_dir/provider.raw.log" || true
             exit 1
           fi
 
-          PROOF_CONFIG="$config_file" PROOF_PORT="$PROOF_PORT" node --input-type=module <<'NODE'
-          import { writeFileSync } from "node:fs";
-          const config = {
-            gateway: {
-              mode: "local",
-              bind: "loopback",
-              port: Number(process.env.PROOF_PORT),
-              auth: { mode: "token", token: "pr111466-proof-token" },
-            },
-            browser: {
-              enabled: true,
-              defaultProfile: "proof-remote",
-              profiles: {
-                "proof-remote": {
-                  cdpUrl: "http://127.0.0.1:9222",
-                  attachOnly: true,
-                  color: "#00AA00",
-                },
-              },
-            },
-            plugins: {
-              entries: {
-                "teams-meetings": {
-                  enabled: true,
-                  config: {
-                    defaultMode: "transcribe",
-                    chrome: {
-                      launch: false,
-                      browserProfile: "proof-remote",
-                      reuseExistingTab: true,
-                      autoJoin: true,
-                      guestName: "OpenClaw PR 111466 Proof",
-                      joinTimeoutMs: 120000,
-                      waitForInCallMs: 60000,
-                    },
-                  },
-                },
-              },
-            },
-          };
-          writeFileSync(process.env.PROOF_CONFIG, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
-          NODE
+          test -x "$codex_bin"
+          env -i \
+            HOME="$proof_home" \
+            PATH="$safe_path" \
+            CI=1 \
+            TMPDIR="$proof_tmp" \
+            "$codex_bin" --version >"$proof_dir/codex-version.txt"
+          grep -F "0.151.0" "$proof_dir/codex-version.txt"
 
-          run_cli() {
-            env \
-              OPENCLAW_STATE_DIR="$state_dir" \
-              OPENCLAW_CONFIG_PATH="$config_file" \
-              OPENCLAW_GATEWAY_PORT="$PROOF_PORT" \
-              node scripts/run-node.mjs "$@"
-          }
-
-          env \
-            OPENCLAW_STATE_DIR="$state_dir" \
-            OPENCLAW_CONFIG_PATH="$config_file" \
-            OPENCLAW_GATEWAY_PORT="$PROOF_PORT" \
-            node scripts/run-node.mjs gateway run --port "$PROOF_PORT" >"$proof_dir/gateway.log" 2>&1 &
-          gateway_pid=$!
-
-          gateway_ready=0
-          for _ in $(seq 1 90); do
-            if curl --noproxy '*' --max-time 1 -fsS "http://127.0.0.1:$PROOF_PORT/readyz" >/dev/null; then
-              gateway_ready=1
-              break
-            fi
-            if ! kill -0 "$gateway_pid" 2>/dev/null; then
-              break
-            fi
-            sleep 1
-          done
-          if [[ "$gateway_ready" != "1" ]]; then
-            echo "::error::Gateway did not become ready"
-            tail -n 120 "$proof_dir/gateway.log" || true
-            exit 1
-          fi
-
-          run_cli browser --browser-profile proof-remote start
-          run_cli browser --browser-profile proof-remote --json open "$MEETING_URL" \
-            >"$proof_dir/opened-tab.json"
-          run_cli browser --browser-profile proof-remote --json tabs >"$proof_dir/tabs-before.json"
-
-          OPENED_TAB="$proof_dir/opened-tab.json" TABS_BEFORE="$proof_dir/tabs-before.json" node --input-type=module <<'NODE'
-          import { readFileSync } from "node:fs";
-          const opened = JSON.parse(readFileSync(process.env.OPENED_TAB, "utf8"));
-          const listed = JSON.parse(readFileSync(process.env.TABS_BEFORE, "utf8"));
-          const targetId = opened.targetId;
-          const tabs = Array.isArray(listed.tabs) ? listed.tabs : [];
-          if (!targetId || !tabs.some((tab) => tab.targetId === targetId)) {
-            console.error("::error::OpenClaw Browser did not retain the pre-opened Teams target");
-            process.exit(1);
-          }
-          console.log(`REUSED_TAB_READY targetId=${targetId}`);
-          NODE
-
-          echo "JOIN_START"
-          run_cli teamsmeetings join "$MEETING_URL" --mode transcribe >"$proof_dir/join.json"
-          echo "JOIN_COMPLETE"
-          run_cli teamsmeetings status >"$proof_dir/status-before.json"
-
-          echo "PHONE_AUDIO_WINDOW_OPEN_FOR_120_SECONDS"
-          sleep 5
-          echo "TEST_LISTEN_STARTED"
-
-          started_ms="$(date +%s%3N)"
+          app_server_args="app-server --listen stdio:// -c 'openai_base_url=\"$provider_url\"'"
           set +e
-          run_cli teamsmeetings test-listen "$MEETING_URL" --mode transcribe \
-            >"$proof_dir/test-listen.json"
-          probe_status=$?
+          env -i \
+            HOME="$proof_home" \
+            PATH="$safe_path" \
+            CI=1 \
+            TMPDIR="$proof_tmp" \
+            XDG_CACHE_HOME="$cache_home" \
+            COREPACK_HOME="$corepack_home" \
+            PNPM_HOME="$pnpm_home" \
+            PNPM_CONFIG_VERIFY_DEPS_BEFORE_RUN=false \
+            pnpm_config_verify_deps_before_run=false \
+            OPENAI_API_KEY="$dummy_key" \
+            OPENCLAW_LIVE_CODEX_HARNESS_APP_SERVER_BASE_URL="$provider_url" \
+            OPENCLAW_CODEX_APP_SERVER_BIN="$codex_bin" \
+            OPENCLAW_CODEX_APP_SERVER_ARGS="$app_server_args" \
+            OPENCLAW_LIVE_CODEX_HARNESS_AUTH=api-key \
+            OPENCLAW_LIVE_CODEX_HARNESS_SUBAGENT_PROBE=1 \
+            OPENCLAW_LIVE_CODEX_HARNESS_SUBAGENT_ONLY=1 \
+            OPENCLAW_LIVE_CODEX_HARNESS_DEBUG=1 \
+            OPENCLAW_LIVE_CODEX_HARNESS_THINKING=low \
+            OPENCLAW_LIVE_CODEX_HARNESS_EXPECTED_EFFORT=low \
+            OPENCLAW_LIVE_CODEX_HARNESS_IMAGE_PROBE=0 \
+            OPENCLAW_LIVE_CODEX_HARNESS_CHAT_IMAGE_PROBE=0 \
+            OPENCLAW_LIVE_CODEX_HARNESS_MCP_PROBE=0 \
+            OPENCLAW_LIVE_CODEX_HARNESS_GUARDIAN_PROBE=0 \
+            OPENCLAW_LIVE_CODEX_HARNESS_MULTI_SESSION_PROBE=0 \
+            OPENCLAW_LIVE_CODEX_HARNESS_RESUME_STRESS=0 \
+            OPENCLAW_LIVE_CODEX_HARNESS_COMPACTION_STRESS=0 \
+            OPENCLAW_LIVE_CODEX_HARNESS_FULL_CONTEXT=0 \
+            OPENCLAW_VITEST_MAX_WORKERS=1 \
+            node --import tsx scripts/test-live.mts \
+              --codex-harness \
+              --no-quiet \
+              -- \
+              src/gateway/gateway-codex-harness.live.test.ts \
+              >"$proof_dir/test.raw.log" 2>&1
+          test_status=$?
           set -e
-          finished_ms="$(date +%s%3N)"
-          printf '{"startedMs":%s,"finishedMs":%s,"elapsedMs":%s,"exitCode":%s}\n' \
-            "$started_ms" "$finished_ms" "$((finished_ms - started_ms))" "$probe_status" \
-            >"$proof_dir/timing.json"
 
-          run_cli teamsmeetings status >"$proof_dir/status-after.json" || true
-          run_cli browser --browser-profile proof-remote --json tabs >"$proof_dir/tabs-after.json" || true
+          cleanup
+          provider_pid=""
 
-          EXPECTED_HEAD="$EXPECTED_HEAD" PROOF_RESULT="$proof_dir/test-listen.json" PROOF_TIMING="$proof_dir/timing.json" PROOF_SUMMARY="$proof_dir/summary.json" node --input-type=module <<'NODE'
-          import { readFileSync, writeFileSync } from "node:fs";
-          const result = JSON.parse(readFileSync(process.env.PROOF_RESULT, "utf8"));
-          const timing = JSON.parse(readFileSync(process.env.PROOF_TIMING, "utf8"));
-          const chrome = result.session?.chrome;
-          const summary = {
-            head: process.env.EXPECTED_HEAD,
-            launched: chrome?.launched,
-            targetId: chrome?.browserTab?.targetId ?? null,
-            openedByPlugin: chrome?.browserTab?.openedByPlugin,
-            listenVerified: result.listenVerified,
-            listenTimedOut: result.listenTimedOut,
-            transcriptLines: result.transcriptLines,
-            lastCaptionText: result.lastCaptionText,
-            elapsedMs: timing.elapsedMs,
-            exitCode: timing.exitCode,
-          };
-          writeFileSync(process.env.PROOF_SUMMARY, `${JSON.stringify(summary, null, 2)}\n`);
-          console.log("PR111466_PROOF_SUMMARY");
-          console.log(JSON.stringify(summary, null, 2));
-          if (
-            timing.exitCode !== 0 ||
-            summary.launched !== false ||
-            !summary.targetId ||
-            summary.openedByPlugin !== false ||
-            summary.listenVerified !== true ||
-            summary.listenTimedOut !== false
-          ) {
-            process.exitCode = 1;
+          env -i \
+            HOME="$proof_home" \
+            PATH="$safe_path" \
+            CI=1 \
+            PROOF_DIR="$proof_dir" \
+            node --input-type=module <<'NODE'
+          import { existsSync, readFileSync, writeFileSync } from "node:fs";
+
+          const proofDir = process.env.PROOF_DIR;
+          const files = ["install", "provider", "test"];
+          const patterns = [
+            [/Bearer\s+[A-Za-z0-9._-]+/giu, "Bearer [REDACTED]"],
+            [/(?:github_pat_|gh[opsu]_|ghr_)[A-Za-z0-9_]+/gu, "[REDACTED_GITHUB_TOKEN]"],
+            [/\bsk-[A-Za-z0-9_-]{12,}\b/gu, "[REDACTED_API_KEY]"],
+          ];
+          for (const name of files) {
+            const rawPath = proofDir + "/" + name + ".raw.log";
+            let text = existsSync(rawPath) ? readFileSync(rawPath, "utf8") : "";
+            for (const [pattern, replacement] of patterns) {
+              text = text.replace(pattern, replacement);
+            }
+            writeFileSync(proofDir + "/" + name + ".redacted.log", text, "utf8");
           }
           NODE
 
-          exit "$probe_status"
+          set +e
+          env -i \
+            HOME="$proof_home" \
+            PATH="$safe_path" \
+            CI=1 \
+            PROOF_DIR="$proof_dir" \
+            EXPECTED_HEAD="$EXPECTED_HEAD" \
+            TOOLING_SHA="$GITHUB_SHA" \
+            TEST_STATUS="$test_status" \
+            node --input-type=module <<'NODE'
+          import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
-      - name: Prepare redacted proof artifact
+          const proofDir = process.env.PROOF_DIR;
+          const actionPath = proofDir + "/provider-actions.jsonl";
+          const actions = existsSync(actionPath)
+            ? readFileSync(actionPath, "utf8")
+                .split("\n")
+                .filter(Boolean)
+                .map((line) => JSON.parse(line))
+            : [];
+          const orderedNames = actions
+            .map((entry) => entry.action)
+            .filter((name) =>
+              ["spawn_wave_1", "yield_wave_1", "spawn_wave_2", "yield_wave_2", "parent_final"].includes(
+                name,
+              ),
+            );
+          const expectedOrder = [
+            "spawn_wave_1",
+            "yield_wave_1",
+            "spawn_wave_2",
+            "yield_wave_2",
+            "parent_final",
+          ];
+          const finalEntries = actions.filter((entry) => entry.action === "parent_final");
+          const unexpected = actions.filter((entry) =>
+            ["unexpected", "provider_error"].includes(entry.action),
+          );
+          const heldChildReplies = actions
+            .map((entry) => entry.action)
+            .filter((name) => ["hold_wave_1", "hold_wave_2"].includes(name));
+          const releasedChildReplies = actions
+            .map((entry) => entry.action)
+            .filter((name) =>
+              [
+                "release_wave_1_after_yield",
+                "release_wave_1_after_yield_and_arrival",
+                "release_wave_2_after_yield",
+                "release_wave_2_after_yield_and_arrival",
+              ].includes(name),
+            );
+          const nativeSpawnContracts = actions
+            .filter((entry) => ["spawn_wave_1", "spawn_wave_2"].includes(entry.action))
+            .map((entry) => entry.spawnTool ?? null);
+          const codexVersion = existsSync(proofDir + "/codex-version.txt")
+            ? readFileSync(proofDir + "/codex-version.txt", "utf8").trim()
+            : "";
+          const orderMatches = JSON.stringify(orderedNames) === JSON.stringify(expectedOrder);
+          const ok =
+            Number(process.env.TEST_STATUS) === 0 &&
+            orderMatches &&
+            finalEntries.length === 1 &&
+            JSON.stringify(heldChildReplies) ===
+              JSON.stringify(["hold_wave_1", "hold_wave_2"]) &&
+            releasedChildReplies.some((name) => name.startsWith("release_wave_1")) &&
+            releasedChildReplies.some((name) => name.startsWith("release_wave_2")) &&
+            nativeSpawnContracts.length === 2 &&
+            nativeSpawnContracts.every((contract) => contract?.name === "spawn_agent") &&
+            unexpected.length === 0 &&
+            codexVersion.includes("0.151.0");
+          const verdict = {
+            ok,
+            validationSha: process.env.EXPECTED_HEAD,
+            toolingSha: process.env.TOOLING_SHA,
+            codexVersion,
+            runtime: "real OpenClaw Gateway plus managed Codex app-server",
+            providerBoundary: "deterministic localhost Responses API",
+            externalProviderLiveProof: false,
+            inheritedCredentialsAvailableToPrCode: false,
+            orderedNativeActions: orderedNames,
+            nativeSpawnContracts,
+            heldChildReplies,
+            releasedChildReplies,
+            exactlyOneFinalParentResponse: finalEntries.length === 1,
+            finalParentResponse: finalEntries[0]?.finalReply ?? null,
+            testExitCode: Number(process.env.TEST_STATUS),
+            unexpectedProviderActions: unexpected,
+          };
+          writeFileSync(proofDir + "/verdict.json", JSON.stringify(verdict, null, 2) + "\n", "utf8");
+          console.log(JSON.stringify(verdict, null, 2));
+          process.exit(ok ? 0 : 1);
+          NODE
+          verdict_status=$?
+          set -e
+
+          echo "Codex version:"
+          cat "$proof_dir/codex-version.txt"
+          echo "Redacted test log tail:"
+          tail -n 300 "$proof_dir/test.redacted.log"
+          echo "Verdict:"
+          cat "$proof_dir/verdict.json"
+
+          if [[ "$test_status" -ne 0 || "$verdict_status" -ne 0 ]]; then
+            exit 1
+          fi
+
+      - name: Finalize redacted native proof diagnostics
         if: always()
         shell: bash
         working-directory: openclaw
+        env:
+          PROOF_STEP_OUTCOME: ${{ steps.native-proof.outcome }}
         run: |
           set -euo pipefail
-          echo "::add-mask::$MEETING_URL"
-          raw="$RUNNER_TEMP/pr111466-proof"
-          public="$RUNNER_TEMP/pr111466-proof-public"
-          mkdir -p "$public"
-          RAW_DIR="$raw" PUBLIC_DIR="$public" MEETING_URL="$MEETING_URL" node --input-type=module <<'NODE'
+          proof_dir="$RUNNER_TEMP/pr130563-native-proof"
+          proof_home="$proof_dir/home"
+          proof_tmp="$proof_dir/tmp"
+          mkdir -p "$proof_dir" "$proof_home" "$proof_tmp"
+
+          env -i \
+            HOME="$proof_home" \
+            PATH="$PATH" \
+            CI=1 \
+            PROOF_DIR="$proof_dir" \
+            PROOF_STEP_OUTCOME="$PROOF_STEP_OUTCOME" \
+            EXPECTED_HEAD="$EXPECTED_HEAD" \
+            TOOLING_SHA="$GITHUB_SHA" \
+            node --input-type=module <<'NODE'
           import { existsSync, readFileSync, writeFileSync } from "node:fs";
-          import { join } from "node:path";
-          const files = [
-            "join.json",
-            "status-before.json",
-            "test-listen.json",
-            "status-after.json",
-            "opened-tab.json",
-            "tabs-before.json",
-            "tabs-after.json",
-            "timing.json",
-            "summary.json",
-            "gateway.log",
-            "chrome.log",
+
+          const proofDir = process.env.PROOF_DIR;
+          const patterns = [
+            [/Bearer\s+[A-Za-z0-9._-]+/giu, "Bearer [REDACTED]"],
+            [/(?:github_pat_|gh[opsu]_|ghr_)[A-Za-z0-9_]+/gu, "[REDACTED_GITHUB_TOKEN]"],
+            [/\bsk-[A-Za-z0-9_-]{12,}\b/gu, "[REDACTED_API_KEY]"],
           ];
-          const sanitizeJson = (value, key = "") => {
-            if (typeof value === "string") {
-              if (key.toLowerCase().includes("url") || /teams\.live\.com/i.test(value)) {
-                return "[redacted-url]";
-              }
-              return value.split(process.env.MEETING_URL).join("[redacted-meeting-url]");
+          for (const name of ["install", "provider", "test"]) {
+            const rawPath = `${proofDir}/${name}.raw.log`;
+            let text = existsSync(rawPath) ? readFileSync(rawPath, "utf8") : "";
+            for (const [pattern, replacement] of patterns) {
+              text = text.replace(pattern, replacement);
             }
-            if (Array.isArray(value)) return value.map((entry) => sanitizeJson(entry));
-            if (value && typeof value === "object") {
-              return Object.fromEntries(
-                Object.entries(value).map(([entryKey, entryValue]) => [
-                  entryKey,
-                  sanitizeJson(entryValue, entryKey),
-                ]),
-              );
-            }
-            return value;
-          };
-          for (const name of files) {
-            const source = join(process.env.RAW_DIR, name);
-            if (!existsSync(source)) continue;
-            const raw = readFileSync(source, "utf8");
-            let redacted;
-            if (name.endsWith(".json")) {
-              redacted = `${JSON.stringify(sanitizeJson(JSON.parse(raw)), null, 2)}\n`;
-            } else {
-              redacted = raw
-                .split(process.env.MEETING_URL)
-                .join("[redacted-meeting-url]")
-                .replace(/(?:https?|wss?):\/\/[^\s"']+/g, "[redacted-url]");
-            }
-            writeFileSync(join(process.env.PUBLIC_DIR, name), redacted);
+            writeFileSync(`${proofDir}/${name}.redacted.log`, text, "utf8");
+          }
+
+          const verdictPath = `${proofDir}/verdict.json`;
+          if (!existsSync(verdictPath)) {
+            const codexVersionPath = `${proofDir}/codex-version.txt`;
+            const codexVersion = existsSync(codexVersionPath)
+              ? readFileSync(codexVersionPath, "utf8").trim()
+              : "";
+            const verdict = {
+              ok: false,
+              validationSha: process.env.EXPECTED_HEAD,
+              toolingSha: process.env.TOOLING_SHA,
+              codexVersion,
+              runtime: "real OpenClaw Gateway plus managed Codex app-server",
+              providerBoundary: "deterministic localhost Responses API",
+              externalProviderLiveProof: false,
+              inheritedCredentialsAvailableToPrCode: false,
+              proofStepOutcome: process.env.PROOF_STEP_OUTCOME,
+              diagnosticsOnly: true,
+            };
+            writeFileSync(verdictPath, JSON.stringify(verdict, null, 2) + "\n", "utf8");
           }
           NODE
-          sha256sum "$public"/* >"$public/SHA256SUMS"
 
-      - name: Upload redacted terminal proof
+      - name: Upload redacted native proof artifacts
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: pr111466-live-teams-proof
-          path: ${{ runner.temp }}/pr111466-proof-public
-          if-no-files-found: error
-          retention-days: 1
+          name: pr130563-native-runtime-proof
+          path: |
+            ${{ runner.temp }}/pr130563-native-proof/install.redacted.log
+            ${{ runner.temp }}/pr130563-native-proof/provider.redacted.log
+            ${{ runner.temp }}/pr130563-native-proof/test.redacted.log
+            ${{ runner.temp }}/pr130563-native-proof/provider-actions.jsonl
+            ${{ runner.temp }}/pr130563-native-proof/provider-requests.jsonl
+            ${{ runner.temp }}/pr130563-native-proof/codex-version.txt
+            ${{ runner.temp }}/pr130563-native-proof/verdict.json
+          if-no-files-found: warn
+          retention-days: 30
