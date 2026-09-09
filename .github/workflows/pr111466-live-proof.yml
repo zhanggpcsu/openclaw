@@ -138,7 +138,7 @@ jobs:
           safe_path="$pnpm_home:$PATH"
           provider_url="http://127.0.0.1:$PROVIDER_PORT/v1"
           dummy_key="openclaw-pr130563-localhost-proof"
-          codex_bin="$PWD/node_modules/.bin/codex"
+          codex_bin="$PWD/extensions/codex/node_modules/.bin/codex"
           mkdir -p "$proof_dir" "$proof_home" "$proof_tmp" "$cache_home"
 
           provider_pid=""
