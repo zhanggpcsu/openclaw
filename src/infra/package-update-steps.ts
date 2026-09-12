@@ -3,11 +3,14 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { validRange } from "semver";
 import { LEGACY_PACKAGE_INSTALL_GUARD_RELATIVE_PATH } from "../../scripts/lib/package-lifecycle-marker.mjs";
 import { resolveBunGlobalInstallOwner } from "./detect-package-manager.js";
 import { formatErrorMessage } from "./errors.js";
+import { collectPackageDistContentInventoryErrors } from "./package-dist-inventory.js";
 import { readPackageVersion } from "./package-json.js";
 import { completePendingPackageLifecycle } from "./package-lifecycle.js";
+import type { LocalPackageOverridesResult } from "./package-local-overrides.js";
 import { readPackageVersionIfPresent } from "./package-update-integrity.js";
 import {
   isBlockingPackageUpdateStep,
@@ -24,7 +27,7 @@ import {
   UPDATE_POST_INSTALL_DOCTOR_ADVISORY_EXIT_CODE,
   type UpdatePostInstallDoctorResult,
 } from "./update-doctor-result.js";
-import type { GitRuntimeIdentity } from "./update-git-runtime.js";
+import { readBuiltGatewayBuildId, type GitRuntimeIdentity } from "./update-git-runtime.js";
 import {
   collectInstalledGlobalPackageErrors,
   cleanupGlobalRenameDirs,
@@ -58,6 +61,7 @@ type PackageUpdateStepRunner = (params: {
 }) => Promise<UpdateStepResult>;
 
 type PackageUpdateStepsResult = {
+  localOverrides?: LocalPackageOverridesResult;
   reason?: "already-current";
   steps: UpdateStepResult[];
   activePackageRoot: string | null;
@@ -430,6 +434,33 @@ function isNpmGitSourceInstallSpec(spec: string, packageName: string): boolean {
   );
 }
 
+function isRegistrySourceInstallSpec(spec: string): boolean {
+  // Version-only deduplication is reserved for positively identified registry
+  // specs. Explicit and unknown npm source syntax must prove build identity.
+  // npm-package-arg gives unscoped archive names precedence over package names.
+  const archive = /[.](?:tgz|tar[.]gz|tar)$/iu;
+  const packageName = /^(?:@[a-z0-9_][a-z0-9._-]*\/)?[a-z0-9_][a-z0-9._-]*$/iu;
+  const value = spec.trim();
+  const separator = value.indexOf("@", 1);
+  const name = separator > 0 ? value.slice(0, separator) : value;
+  const selector = separator > 0 ? value.slice(separator + 1).trim() : "";
+
+  if (value.startsWith("npm:") || selector.startsWith("npm:")) {
+    // An alias can replace the underlying package at the same version.
+    return false;
+  }
+  if (!packageName.test(name) || (!name.startsWith("@") && archive.test(name))) {
+    return false;
+  }
+  // File suffixes take precedence over dist-tags in npm's resolve contract.
+  // npm treats leading dots as paths and accepts tags unchanged by encodeURIComponent.
+  return (
+    !selector.startsWith(".") &&
+    !archive.test(selector) &&
+    (validRange(selector, true) !== null || encodeURIComponent(selector) === selector)
+  );
+}
+
 function resolveNativeInstallSpecFromCwd(
   spec: string,
   packageName: string,
@@ -700,14 +731,17 @@ export async function runGlobalPackageUpdateSteps(params: {
   onTransaction?: (transaction: PackageUpdateTransaction) => void;
   expectedGitCheckout?: GitRuntimeIdentity;
   activateGitRoot?: string;
+  localOverrides?: { reapply: boolean; env?: NodeJS.ProcessEnv };
 }): Promise<PackageUpdateStepsResult> {
   // Transaction callbacks must never silently become an in-place manager install.
   const requireStaging = Boolean(
     params.validateCandidate ||
     params.beforeActivate ||
     params.onTransaction ||
-    params.activateGitRoot,
+    params.activateGitRoot ||
+    params.localOverrides,
   );
+  let localOverrides: LocalPackageOverridesResult | undefined;
   let stagedInstall: StagedPackageInstall | null = null;
   let packedInstallDir: string | null = null;
   const originalPackageRoot = params.installTarget.packageRoot ?? params.packageRoot ?? null;
@@ -738,6 +772,7 @@ export async function runGlobalPackageUpdateSteps(params: {
           : { serviceRestartSafe: false, reason: "runtime-verification-failed" };
     }
     return {
+      localOverrides,
       steps: failedSteps,
       activePackageRoot,
       afterVersion,
@@ -1087,7 +1122,19 @@ export async function runGlobalPackageUpdateSteps(params: {
         expectedVersion,
         expectedGitCheckout: params.expectedGitCheckout,
       });
-      // Verify the requested candidate before admitting a package-version no-op.
+      // Registry versions identify published releases. Explicit artifacts can
+      // be rebuilt at the same version, so compare known build identities before
+      // skipping validation. Missing identity is not equality.
+      const registryTarget = isRegistrySourceInstallSpec(params.installSpec);
+      let sameArtifact = false;
+      if (!registryTarget && originalPackageRoot) {
+        const [candidateBuild, installedBuild] = await Promise.all([
+          readBuiltGatewayBuildId(verificationPackageRoot),
+          readBuiltGatewayBuildId(originalPackageRoot),
+        ]);
+        sameArtifact = Boolean(candidateBuild && candidateBuild === installedBuild);
+      }
+      // Verify the requested candidate before admitting a no-op.
       // Source exposure follows the Git SHA contract instead.
       if (
         verificationErrors.length === 0 &&
@@ -1095,6 +1142,7 @@ export async function runGlobalPackageUpdateSteps(params: {
         !params.expectedGitCheckout &&
         requireStaging &&
         !params.requirePackageReplacement &&
+        (registryTarget || sameArtifact) &&
         candidateVersion &&
         candidateVersion === (await readPackageVersionIfPresent(originalPackageRoot))
       ) {
@@ -1157,6 +1205,11 @@ export async function runGlobalPackageUpdateSteps(params: {
           return await packageUpdateFailure(lifecycleStep, steps);
         }
       }
+      if (!params.expectedGitCheckout && verificationErrors.length === 0) {
+        verificationErrors.push(
+          ...(await collectPackageDistContentInventoryErrors(verificationPackageRoot)),
+        );
+      }
       if (verificationErrors.length > 0) {
         steps.push({
           name: "global install verify",
@@ -1206,6 +1259,32 @@ export async function runGlobalPackageUpdateSteps(params: {
             liveTreeMutated = true;
           },
           onTransaction: params.onTransaction,
+          localOverrides: params.expectedGitCheckout ? undefined : params.localOverrides,
+          onLocalOverrides: (result) => {
+            localOverrides = result;
+            if (result.status === "none") {
+              return;
+            }
+            const message = `Local package overrides: ${result.status}; ${result.applied} replayed. Recovery bundle: ${result.recoveryDir}. ${result.warnings.join(" ")}`;
+            const report: UpdateStepResult = {
+              name: "local package overrides",
+              command: "preserve packaged dist edits",
+              cwd: originalPackageRoot ?? process.cwd(),
+              durationMs: 0,
+              exitCode: result.status === "error" ? 1 : 0,
+              stdoutTail: message,
+              // Existing warning rows keep recovery location visible after handoff/finalization.
+              ...(result.status === "error"
+                ? { stderrTail: message }
+                : { advisory: { kind: "recoverable-maintenance", message } }),
+            };
+            const previous = steps.findIndex((step) => step.name === report.name);
+            if (previous === -1) {
+              steps.push(report);
+            } else {
+              steps[previous] = report;
+            }
+          },
         });
         steps.push(swap.step);
         if (swap.postVerifyStep) {
@@ -1252,6 +1331,7 @@ export async function runGlobalPackageUpdateSteps(params: {
       return await packageUpdateFailure(failedStep, steps);
     }
     return {
+      localOverrides,
       steps,
       activePackageRoot,
       afterVersion,

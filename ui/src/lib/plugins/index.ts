@@ -11,7 +11,6 @@ import type {
   PluginsInstallParams,
   PluginsInstallResult,
   PluginsCatalogBrowseResult as ProtocolPluginsCatalogBrowseResult,
-  PluginsCatalogCategoriesResult as ProtocolPluginsCatalogCategoriesResult,
   PluginsCatalogGetResult as ProtocolPluginsCatalogGetResult,
   PluginsListResult as ProtocolPluginsListResult,
   PluginsSetEnabledParams,
@@ -25,7 +24,6 @@ export type PluginCatalogItem = PluginCatalogEntry;
 export type PluginDiscoveryCategory = ProtocolPluginDiscoveryCategory;
 export type PluginDiscoveryEntry = ProtocolPluginDiscoveryEntry;
 export type PluginDiscoveryResult = ProtocolPluginsCatalogBrowseResult;
-export type PluginDiscoveryCategoriesResult = ProtocolPluginsCatalogCategoriesResult;
 export type PluginDiscoveryDetailResult = ProtocolPluginsCatalogGetResult;
 export type PluginDeclaredSurface = ProtocolPluginDeclaredSurface;
 export type PluginHookGrant = ProtocolPluginHookGrant;
@@ -36,6 +34,26 @@ export type PluginListResult = ProtocolPluginsListResult;
 export type PluginInstallRequest = PluginsInstallParams;
 export type PluginMutationResult = PluginsInstallResult | PluginsSetEnabledResult;
 type PluginUninstallResult = PluginsUninstallResult;
+
+export function pluginInstallRequestName(request: PluginInstallRequest): string {
+  switch (request.source) {
+    case "official":
+    case "bundled":
+      return request.pluginId;
+    case "clawhub":
+      return request.packageName;
+    case "npm":
+    case "git":
+      return request.spec;
+    case "local":
+      return request.path;
+    case "npm-pack":
+      return request.archivePath;
+    case "marketplace":
+      return `${request.marketplace}:${request.plugin}`;
+  }
+  return request satisfies never;
+}
 
 export function loadPluginCatalog(client: GatewayBrowserClient): Promise<PluginListResult> {
   return client.request<PluginListResult>("plugins.list", {});

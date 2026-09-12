@@ -361,8 +361,16 @@ const skillWorkshopRelocationCheck: HealthCheck = {
       config: ctx.cfg,
       env: process.env,
     });
+    const automationFindings = (inspection.automationReferences ?? []).map((reference) => ({
+      checkId: SKILL_WORKSHOP_RELOCATION_CHECK_ID,
+      severity: "warning" as const,
+      target: reference.automationId,
+      path: reference.field,
+      message: reference.message,
+      fixHint: reference.fixHint,
+    }));
     if (inspection.externalProposalCount === 0 && inspection.legacyBackupRootCount === 0) {
-      return [];
+      return automationFindings;
     }
     const fixHints: string[] = [];
     if (
@@ -381,6 +389,7 @@ const skillWorkshopRelocationCheck: HealthCheck = {
       );
     }
     return [
+      ...automationFindings,
       {
         checkId: SKILL_WORKSHOP_RELOCATION_CHECK_ID,
         severity: "warning",
@@ -876,9 +885,10 @@ const claudeCliCheck: HealthCheck = {
   },
 };
 
-function createSecurityCheck(deps: CoreHealthCheckDeps): HealthCheck {
+function createSecurityCheck(deps: CoreHealthCheckDeps): DoctorHealthCheck {
   return {
     id: "core/doctor/security",
+    updateReadiness: "post-plugin",
     kind: "core",
     description: "Security posture checks produce structured findings.",
     source: "doctor",
@@ -889,7 +899,7 @@ function createSecurityCheck(deps: CoreHealthCheckDeps): HealthCheck {
   };
 }
 
-function securityAuditFindingToHealthFinding(finding: SecurityAuditFinding): HealthFinding {
+export function securityAuditFindingToHealthFinding(finding: SecurityAuditFinding): HealthFinding {
   const detailLines = finding.detail.split("\n");
   const firstDetail = detailLines.shift() ?? "";
   const fixHint = [...detailLines, ...(finding.remediation?.split("\n") ?? [])].join("\n");
@@ -1095,9 +1105,8 @@ const gatewayPlatformNotesCheck: HealthCheck = {
     if (!isDefaultInstallIdentity(process.env)) {
       return [];
     }
-    const { collectMacGatewayPlatformWarnings } =
-      await import("../commands/doctor-platform-notes.js");
-    const warnings = await collectMacGatewayPlatformWarnings(ctx.cfg);
+    const { collectGatewayPlatformWarnings } = await import("../commands/doctor-platform-notes.js");
+    const warnings = await collectGatewayPlatformWarnings(ctx.cfg);
     return warnings.map((warning) =>
       noteTextToFinding({
         checkId: "core/doctor/gateway-services/platform-notes",

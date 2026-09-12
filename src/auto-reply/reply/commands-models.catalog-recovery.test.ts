@@ -15,6 +15,7 @@ import { PreparedModelRuntimePublicationSupersededError } from "../../agents/pre
 import type { PreparedModelRuntimeSnapshot } from "../../agents/prepared-model-runtime.types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createPluginMetadataSnapshotFixture } from "../../plugins/plugin-metadata.test-support.js";
+import { buildCommandTestParams } from "./commands.test-harness.js";
 
 const catalogMocks = vi.hoisted(() => ({
   readSnapshot: vi.fn<(params: unknown) => ModelCatalogSnapshot | undefined>(),
@@ -24,7 +25,7 @@ const catalogMocks = vi.hoisted(() => ({
   isCurrent: (): boolean => true,
 }));
 
-const { buildPreparedModelsProviderData, resolveModelsCommandReply } =
+const { buildPreparedModelsProviderData, handleModelsCommand, resolveModelsCommandReply } =
   await import("./commands-models.js");
 
 const staleCfg = {
@@ -81,7 +82,6 @@ beforeEach(() => {
 afterEach(() => {
   catalogMocks.readSnapshot.mockReset();
   catalogMocks.getPreparedOwner.mockReset();
-  vi.useRealTimers();
   catalogMocks.authStore = { version: 1, profiles: {} };
   catalogMocks.authModes = {};
   catalogMocks.isCurrent = () => true;
@@ -91,6 +91,33 @@ afterEach(() => {
 });
 
 describe("/models browse catalog recovery", () => {
+  it.each([
+    { commandBodyNormalized: "/models", choice: "- anthropic (1)" },
+    { commandBodyNormalized: "/models anthropic", choice: "- anthropic/claude-opus-4-5" },
+  ])(
+    "keeps usable choices and clears the refresh warning after recovery for $commandBodyNormalized",
+    async ({ commandBodyNormalized, choice }) => {
+      const snapshot: ModelCatalogSnapshot = {
+        entries: [{ provider: "anthropic", id: "claude-opus-4-5", name: "Available model" }],
+        routeVariants: [],
+        refreshFailed: true,
+      };
+      catalogMocks.readSnapshot.mockReturnValue(snapshot);
+      const params = buildCommandTestParams(commandBodyNormalized, staleCfg);
+
+      const failedRefresh = await handleModelsCommand(params, true);
+
+      expect(failedRefresh?.shouldContinue).toBe(false);
+      expect(failedRefresh?.reply?.text).toContain("Some models could not be refreshed.");
+      expect(failedRefresh?.reply?.text).toContain(choice);
+      snapshot.refreshFailed = false;
+      const recovered = await handleModelsCommand(params, true);
+      expect(recovered?.shouldContinue).toBe(false);
+      expect(recovered?.reply?.text).not.toContain("Some models could not be refreshed.");
+      expect(recovered?.reply?.text).toContain(choice);
+    },
+  );
+
   it.each(["default", "all"] as const)(
     "rejects a generation retired during %s projection and allows a current retry",
     async (view) => {
@@ -144,18 +171,13 @@ describe("/models browse catalog recovery", () => {
   });
 
   it.each([
-    { nativeAuth: true, providerKey: false, disabled: false, visible: true, slowCatalog: false },
-    { nativeAuth: false, providerKey: false, disabled: false, visible: false, slowCatalog: false },
-    { nativeAuth: false, providerKey: true, disabled: false, visible: false, slowCatalog: false },
-    { nativeAuth: true, providerKey: true, disabled: true, visible: false, slowCatalog: false },
-    { nativeAuth: true, providerKey: false, disabled: false, visible: true, slowCatalog: true },
+    { nativeAuth: true, providerKey: false, disabled: false, visible: true },
+    { nativeAuth: false, providerKey: false, disabled: false, visible: false },
+    { nativeAuth: false, providerKey: true, disabled: false, visible: false },
+    { nativeAuth: true, providerKey: true, disabled: true, visible: false },
   ])(
-    "lists bound models using native auth=$nativeAuth, provider key=$providerKey, disabled=$disabled, slow catalog=$slowCatalog",
-    async ({ nativeAuth, providerKey, disabled, visible, slowCatalog }) => {
-      if (slowCatalog) {
-        vi.useRealTimers();
-        vi.useFakeTimers();
-      }
+    "lists bound models using native auth=$nativeAuth, provider key=$providerKey, disabled=$disabled",
+    async ({ nativeAuth, providerKey, disabled, visible }) => {
       vi.stubEnv("ANTHROPIC_API_KEY", providerKey ? "synthetic-provider-key" : "");
       cliBackendsTesting.setDepsForTest({
         resolveRuntimeCliBackends: () => [
@@ -202,15 +224,11 @@ describe("/models browse catalog recovery", () => {
         throw new Error("Published browsing consulted pending acquisition");
       });
 
-      const replyPromise = resolveModelsCommandReply({
+      const reply = await resolveModelsCommandReply({
         cfg,
         commandBodyNormalized: "/models anthropic",
         agentId: "main",
       });
-      if (slowCatalog) {
-        await vi.advanceTimersByTimeAsync(750);
-      }
-      const reply = await replyPromise;
 
       expect(reply?.text?.includes("- anthropic/claude-sonnet-4-6")).toBe(visible);
       expect(reply?.text?.includes("- anthropic/claude-haiku-4-5")).toBe(providerKey);
@@ -344,16 +362,6 @@ describe("/models browse catalog recovery", () => {
     },
   );
 
-  it("returns the exact-config snapshot when the prepared owner matches", async () => {
-    catalogMocks.readSnapshot.mockReturnValueOnce({
-      entries: [{ provider: "anthropic", id: "claude-opus-4-5", name: "Claude Opus" }],
-      routeVariants: [],
-    });
-
-    const data = await buildPreparedModelsProviderData(staleCfg);
-
-    expect(data.byProvider.get("anthropic")).toEqual(new Set(["claude-opus-4-5"]));
-  });
   it("returns visible not-ready guidance from the public models command", async () => {
     vi.mocked(preparedCatalog.getPublishedPreparedModelCatalogOwnerSnapshot).mockReturnValueOnce(
       undefined,

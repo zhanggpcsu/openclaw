@@ -5594,7 +5594,7 @@ async function resolveGatewayLiveRequestedModels(): Promise<string | undefined> 
   if (!selected) {
     throw new Error("fresh OpenAI API-key inference selection returned no candidate");
   }
-  expect(selected.modelRef).toBe("openai/gpt-5.6-sol");
+  expect(selected.modelRef).toBe("openai/gpt-6-astra");
   return selected.modelRef;
 }
 
@@ -5743,7 +5743,7 @@ async function prepareLiveGatewayWorkspace(workspaceDir: string): Promise<void> 
   // retired JSON markers or empty initialized workspaces block the first turn.
   await ensureAgentWorkspace({ dir: workspaceDir, ensureBootstrapFiles: true });
   await fs.rm(path.join(workspaceDir, "BOOTSTRAP.md"), { force: true });
-  mergeWorkspaceSetupState(workspaceDir, { setupCompletedAt: new Date().toISOString() });
+  await mergeWorkspaceSetupState(workspaceDir, { setupCompletedAt: new Date().toISOString() });
 }
 
 async function runGatewayModelSuite(params: GatewayModelSuiteParams) {

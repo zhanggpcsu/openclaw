@@ -18,14 +18,21 @@ import {
 } from "../plugins/runtime.js";
 import { replaceRuntimeAuthProfileStoreSnapshots } from "./auth-profiles/runtime-snapshots.js";
 import { ensureAuthProfileStore } from "./auth-profiles/store-runtime.js";
+import { formatModelCatalogAuthLabel } from "./model-catalog-auth-labels.js";
 import {
   encodePluginModelCatalogRelativePath,
   PLUGIN_MODEL_CATALOG_GENERATED_BY,
   replacePersistedPluginModelCatalogs,
 } from "./plugin-model-catalog.js";
 import { preparePublishedModelCatalogOwnerIdentity } from "./prepared-model-catalog-owner.js";
-import { getPreparedModelFullCatalogAuth } from "./prepared-model-runtime-auth.js";
+import { materializePreparedModelCatalogOwner } from "./prepared-model-catalog.js";
+import {
+  getPreparedModelFullCatalogAuth,
+  getPreparedModelRuntimeAuthLabels,
+  getPreparedModelRuntimeAuthStore,
+} from "./prepared-model-runtime-auth.js";
 import { startSerializedSnapshotBuildBatch } from "./prepared-model-runtime.build.js";
+import { retainPreparedPluginGeneration } from "./prepared-model-runtime.plugin-lifetime.js";
 import type {
   PreparedModelRuntimeOwner,
   PreparedModelRuntimeSnapshot,
@@ -632,6 +639,10 @@ export async function expectNativeHarnessModelsPublishedFromWorker(params: {
       "static",
     ).pending
   )[0]!;
+  // Direct builds need the same retained generation that publication gives real callers.
+  await using _ = {
+    [Symbol.asyncDispose]: retainPreparedPluginGeneration(build.pluginGeneration),
+  };
   await expectNativeHarnessModelsPublished({
     config,
     metadataSnapshot: build.pluginGeneration.pluginMetadataSnapshot,
@@ -652,4 +663,18 @@ export async function expectNativeHarnessModelsPublishedFromWorker(params: {
       (entry) => entry.id === "configured-dynamic-model",
     ),
   ).toBe(false);
+}
+
+export function expectCatalogAuth(snapshot: PreparedModelRuntimeSnapshot, provider: string) {
+  const owner = materializePreparedModelCatalogOwner(snapshot);
+  return expect(
+    formatModelCatalogAuthLabel(
+      getPreparedModelRuntimeAuthLabels(owner).get(provider)?.all ?? "missing",
+      {
+        cfg: owner.config,
+        store: getPreparedModelRuntimeAuthStore(owner)!,
+        metadataSnapshot: owner.metadataSnapshot,
+      },
+    ),
+  );
 }
