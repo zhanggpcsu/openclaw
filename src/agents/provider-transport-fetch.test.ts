@@ -83,6 +83,7 @@ const {
 
 vi.mock("../infra/net/fetch-guard.js", () => ({
   fetchWithSsrFGuard: fetchWithSsrFGuardMock,
+  fetchWithSsrFGuardWithTransportOptions: fetchWithSsrFGuardMock,
   withTrustedEnvProxyGuardedFetchMode: withTrustedEnvProxyGuardedFetchModeMock,
 }));
 
@@ -696,8 +697,7 @@ describe("buildGuardedModelFetch", () => {
   });
 
   it("passes model request timeouts to local service startup", async () => {
-    const timeoutController = new AbortController();
-    const timeoutSpy = vi.spyOn(AbortSignal, "timeout").mockReturnValue(timeoutController.signal);
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
     const model = makeProviderModelFixture<"openai-completions">({
       id: "deepseek-v4-flash",
       provider: "ds4",
@@ -712,24 +712,24 @@ describe("buildGuardedModelFetch", () => {
       });
       await response.text();
 
-      expect(timeoutSpy).toHaveBeenCalledWith(750);
-      expect(ensureModelProviderLocalServiceMock).toHaveBeenCalledWith(
-        model,
-        undefined,
-        timeoutController.signal,
-      );
+      // The startup deadline is armed for the request timeout and settled once
+      // response headers arrive so the streaming body outlives the deadline.
+      expect(setTimeoutSpy).toHaveBeenCalledWith(expect.any(Function), 750);
+      const startupSignal = vi.mocked(ensureModelProviderLocalServiceMock).mock.calls.at(-1)?.[2];
+      expect(startupSignal).toBeInstanceOf(AbortSignal);
+      expect((startupSignal as AbortSignal).aborted).toBe(false);
       const params = latestGuardedFetchParams();
       expect(params.timeoutMs).toBe(750);
-      expect(params.signal).toBe(timeoutController.signal);
+      expect(params.signal).toBeInstanceOf(AbortSignal);
+      expect((params.signal as AbortSignal).aborted).toBe(false);
       expect((params.init as RequestInit | undefined)?.signal).toBeUndefined();
     } finally {
-      timeoutSpy.mockRestore();
+      setTimeoutSpy.mockRestore();
     }
   });
 
-  it("caps oversized model request timeouts before arming abort signals", async () => {
-    const timeoutController = new AbortController();
-    const timeoutSpy = vi.spyOn(AbortSignal, "timeout").mockReturnValue(timeoutController.signal);
+  it("caps oversized model request timeouts before arming the startup deadline", async () => {
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
     const model = makeProviderModelFixture<"openai-completions">({
       id: "deepseek-v4-flash",
       provider: "ds4",
@@ -744,15 +744,10 @@ describe("buildGuardedModelFetch", () => {
       });
       await response.text();
 
-      expect(timeoutSpy).toHaveBeenCalledWith(MAX_TIMER_TIMEOUT_MS);
-      expect(ensureModelProviderLocalServiceMock).toHaveBeenCalledWith(
-        model,
-        undefined,
-        timeoutController.signal,
-      );
+      expect(setTimeoutSpy).toHaveBeenCalledWith(expect.any(Function), MAX_TIMER_TIMEOUT_MS);
       expect(latestGuardedFetchParams().timeoutMs).toBe(MAX_TIMER_TIMEOUT_MS);
     } finally {
-      timeoutSpy.mockRestore();
+      setTimeoutSpy.mockRestore();
     }
   });
 
@@ -783,10 +778,7 @@ describe("buildGuardedModelFetch", () => {
 
   it("combines caller abort signals with model request timeouts", async () => {
     const callerController = new AbortController();
-    const timeoutController = new AbortController();
-    const combinedController = new AbortController();
-    const timeoutSpy = vi.spyOn(AbortSignal, "timeout").mockReturnValue(timeoutController.signal);
-    const anySpy = vi.spyOn(AbortSignal, "any").mockReturnValue(combinedController.signal);
+    const anySpy = vi.spyOn(AbortSignal, "any");
     const model = makeProviderModelFixture<"openai-completions">({
       id: "deepseek-v4-flash",
       provider: "ds4",
@@ -802,18 +794,13 @@ describe("buildGuardedModelFetch", () => {
       });
       await response.text();
 
-      expect(timeoutSpy).toHaveBeenCalledWith(750);
-      expect(anySpy).toHaveBeenCalledWith([callerController.signal, timeoutController.signal]);
-      expect(ensureModelProviderLocalServiceMock).toHaveBeenCalledWith(
-        model,
-        undefined,
-        combinedController.signal,
-      );
+      expect(anySpy).toHaveBeenCalledWith([callerController.signal, expect.any(AbortSignal)]);
+      const combined = vi.mocked(anySpy).mock.results.at(-1)?.value as AbortSignal;
+      expect(ensureModelProviderLocalServiceMock).toHaveBeenCalledWith(model, undefined, combined);
       const params = latestGuardedFetchParams();
-      expect(params.signal).toBe(combinedController.signal);
+      expect(params.signal).toBe(combined);
       expect((params.init as RequestInit | undefined)?.signal).toBe(callerController.signal);
     } finally {
-      timeoutSpy.mockRestore();
       anySpy.mockRestore();
     }
   });
@@ -840,8 +827,6 @@ describe("buildGuardedModelFetch", () => {
   it("retries one replay-safe Anthropic transport failure before fallback", async () => {
     const releaseLocalService = vi.fn();
     const releaseGuardedFetch = vi.fn(async () => undefined);
-    const timeoutController = new AbortController();
-    const timeoutSpy = vi.spyOn(AbortSignal, "timeout").mockReturnValue(timeoutController.signal);
     ensureModelProviderLocalServiceMock.mockResolvedValue({ release: releaseLocalService });
     mockTrackedFetchFailure(fetchFailure("UND_ERR_SOCKET"), "not-sent");
     fetchWithSsrFGuardMock.mockResolvedValueOnce({
@@ -868,9 +853,9 @@ describe("buildGuardedModelFetch", () => {
       const firstParams = fetchWithSsrFGuardMock.mock.calls[0]?.[0];
       const secondParams = fetchWithSsrFGuardMock.mock.calls[1]?.[0];
       expect((secondParams?.init as RequestInit | undefined)?.body).toBe(body);
-      expect(firstParams?.signal).toBe(timeoutController.signal);
-      expect(secondParams?.signal).toBe(timeoutController.signal);
-      expect(timeoutSpy).toHaveBeenCalledOnce();
+      // The retry reuses the same startup-deadline signal; it is not re-armed.
+      expect(firstParams?.signal).toBeInstanceOf(AbortSignal);
+      expect(secondParams?.signal).toBe(firstParams?.signal);
       expect(ensureModelProviderLocalServiceMock).toHaveBeenCalledTimes(1);
       expect(releaseLocalService).not.toHaveBeenCalled();
       expect(releaseGuardedFetch).not.toHaveBeenCalled();
@@ -879,7 +864,7 @@ describe("buildGuardedModelFetch", () => {
       expect(releaseLocalService).toHaveBeenCalledTimes(1);
       expect(releaseGuardedFetch).toHaveBeenCalledTimes(1);
     } finally {
-      timeoutSpy.mockRestore();
+      // noop: retained for symmetry with sibling retry tests
     }
   });
 

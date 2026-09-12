@@ -13,6 +13,7 @@ import { readResponseWithLimit } from "../http-body.js";
 import {
   fetchConfiguredLocalOriginWithSsrFGuard,
   fetchWithSsrFGuard,
+  fetchWithSsrFGuardWithTransportOptions,
   GUARDED_FETCH_MODE,
   retainSafeHeadersForCrossOriginRedirectHeaders,
 } from "./fetch-guard.js";
@@ -419,7 +420,7 @@ describe("fetchWithSsrFGuard hardening", () => {
     });
 
     await expect(
-      fetchWithSsrFGuard({
+      fetchWithSsrFGuardWithTransportOptions({
         url: "https://api.example.test/v1/messages",
         lookupFn,
         sendTracker,
@@ -436,7 +437,7 @@ describe("fetchWithSsrFGuard hardening", () => {
     });
 
     await expect(
-      fetchWithSsrFGuard({
+      fetchWithSsrFGuardWithTransportOptions({
         url: "https://api.example.test/v1/messages",
         fetchImpl,
         sendTracker,
@@ -2811,7 +2812,7 @@ describe("fetchWithSsrFGuard hardening", () => {
       const sendTracker: GuardedFetchSendTracker = { state: "unknown" };
 
       await expect(
-        fetchWithSsrFGuard({
+        fetchWithSsrFGuardWithTransportOptions({
           url: `http://127.0.0.1:${port}/v1/messages`,
           init: {
             method: "POST",

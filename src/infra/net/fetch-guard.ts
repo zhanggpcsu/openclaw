@@ -94,8 +94,6 @@ export type GuardedFetchOptions = {
   auditContext?: string;
   /** Internal opt-in for reusing freshly revalidated, direct pinned dispatchers. */
   dispatcherPool?: PinnedDispatcherPool;
-  /** Internal request-body send observation for replay-safe transport recovery. */
-  sendTracker?: GuardedFetchSendTracker;
 };
 
 export type GuardedFetchResult = {
@@ -122,6 +120,12 @@ type GuardedFetchInternalOptions = GuardedFetchOptions & {
   managedProxyBypass?: ConfiguredLocalOriginManagedProxyBypass;
   /** Preserve ambient Undici env-proxy routing for each eligible URL while keeping strict checks otherwise. */
   useEnvProxyForEligibleUrls?: boolean;
+  /**
+   * Internal request-body send observation for replay-safe transport recovery.
+   * Deliberately kept off the exported options type so it never becomes a
+   * plugin-facing contract; carried only through the transport seam below.
+   */
+  sendTracker?: GuardedFetchSendTracker;
 };
 
 type GuardedFetchConfiguredLocalOriginOptions = GuardedFetchOptions & {
@@ -408,11 +412,28 @@ function rewriteRedirectInitForCrossOrigin(params: {
 export { fetchWithRuntimeDispatcher } from "./runtime-fetch.js";
 
 export async function fetchWithSsrFGuard(params: GuardedFetchOptions): Promise<GuardedFetchResult> {
-  const { managedProxyBypass: _ignoredManagedProxyBypass, ...publicParams } =
-    params as GuardedFetchOptions & {
-      managedProxyBypass?: unknown;
-    };
+  const {
+    managedProxyBypass: _ignoredManagedProxyBypass,
+    // Runtime callers cannot smuggle the internal transport seam through the
+    // public options object; it would silently widen the plugin contract.
+    sendTracker: _ignoredSendTracker,
+    ...publicParams
+  } = params as GuardedFetchOptions & {
+    managedProxyBypass?: unknown;
+    sendTracker?: unknown;
+  };
   return await fetchWithSsrFGuardInternal(publicParams);
+}
+
+/**
+ * Transport-owned entry that accepts internal-only options (send observation)
+ * alongside the public ones. Not part of the plugin SDK surface: replay-safe
+ * transport recovery is an internal provider-transport concern.
+ */
+export async function fetchWithSsrFGuardWithTransportOptions(
+  params: GuardedFetchInternalOptions,
+): Promise<GuardedFetchResult> {
+  return await fetchWithSsrFGuardInternal(params);
 }
 
 export async function fetchConfiguredLocalOriginWithSsrFGuard({
@@ -666,7 +687,14 @@ async function fetchWithSsrFGuardInternal(
           (currentInit as (RequestInit & { body?: BodyInit | null }) | undefined)?.body ?? null,
         transport: "http" as const,
         flowId: params.capture === false ? undefined : params.capture?.flowId,
-        meta: { captureOrigin: "guarded-fetch" },
+        meta: {
+          captureOrigin: "guarded-fetch",
+          ...(params.auditContext ? { auditContext: params.auditContext } : {}),
+          ...(params.capture === false ? {} : params.capture?.meta),
+          ...(params.capture && params.capture.sensitiveRequestHeaderNames
+            ? { sensitiveRequestHeaderNames: params.capture.sensitiveRequestHeaderNames }
+            : {}),
+        },
       };
       try {
         response = shouldUseRuntimeFetch

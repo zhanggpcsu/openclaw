@@ -19,7 +19,7 @@ import {
 } from "@openclaw/normalization-core/number-coercion";
 import { isAbortError } from "../infra/abort-signal.js";
 import {
-  fetchWithSsrFGuard,
+  fetchWithSsrFGuardWithTransportOptions,
   withTrustedEnvProxyGuardedFetchMode,
 } from "../infra/net/fetch-guard.js";
 import { wrapGuardedBodyStream } from "../infra/net/guarded-body-stream.js";
@@ -590,18 +590,34 @@ export function resolveModelRequestTimeoutMs(
     : undefined;
 }
 
-function buildModelRequestSignal(
-  baseSignal: AbortSignal | undefined,
-  timeoutMs: number | undefined,
-): AbortSignal | undefined {
+/**
+ * Builds the request signal with a startup deadline. The fixed timeout bounds
+ * connection and request-header work only: callers settle it once response
+ * headers arrive so a healthy streaming body stays bounded by the guard's
+ * refreshable idle timer and the caller's base cancellation, never by the
+ * original one-shot deadline.
+ */
+function buildModelRequestSignal(params: {
+  baseSignal: AbortSignal | undefined;
+  timeoutMs: number | undefined;
+}): { signal: AbortSignal | undefined; settleStartupDeadline: () => void } {
+  const { baseSignal, timeoutMs } = params;
   if (timeoutMs === undefined) {
-    return baseSignal;
+    return { signal: baseSignal, settleStartupDeadline: () => {} };
   }
-  const timeoutSignal = AbortSignal.timeout(timeoutMs);
-  if (!baseSignal) {
-    return timeoutSignal;
-  }
-  return AbortSignal.any([baseSignal, timeoutSignal]);
+  const startupController = new AbortController();
+  const timer = setTimeout(
+    () =>
+      startupController.abort(
+        new DOMException("The operation was aborted due to timeout", "TimeoutError"),
+      ),
+    timeoutMs,
+  );
+  const settleStartupDeadline = () => clearTimeout(timer);
+  const signal = baseSignal
+    ? AbortSignal.any([baseSignal, startupController.signal])
+    : startupController.signal;
+  return { signal, settleStartupDeadline };
 }
 
 function isReplayableAnthropicMessagesRequest(params: {
@@ -862,7 +878,10 @@ export function buildGuardedModelFetch(
       requestInit ??
       (swappedEgress.headers && init ? { ...init, headers: swappedEgress.headers } : init);
     const baseSignal = baseInit?.signal ?? undefined;
-    const requestSignal = buildModelRequestSignal(baseSignal, requestTimeoutMs);
+    const { signal: requestSignal, settleStartupDeadline } = buildModelRequestSignal({
+      baseSignal,
+      timeoutMs: requestTimeoutMs,
+    });
     const guardedFetchOptions = {
       url,
       init: baseInit,
@@ -882,7 +901,7 @@ export function buildGuardedModelFetch(
       allowCrossOriginUnsafeRedirectReplay: false,
       ...(policy ? { policy } : {}),
     };
-    let result: Awaited<ReturnType<typeof fetchWithSsrFGuard>>;
+    let result: Awaited<ReturnType<typeof fetchWithSsrFGuardWithTransportOptions>>;
     const fetchStartedAt = Date.now();
     const useEnvProxy = !dispatcherPolicy && shouldUseEnvHttpProxyForUrl(url);
     emitModelTransportDebug(
@@ -907,7 +926,7 @@ export function buildGuardedModelFetch(
       const maxAttempts = shouldTrackRequestSend ? 2 : 1;
       for (let attempt = 1; ; attempt += 1) {
         try {
-          result = await fetchWithSsrFGuard({
+          result = await fetchWithSsrFGuardWithTransportOptions({
             ...guardedFetchParams,
             ...(shouldTrackRequestSend ? { sendTracker } : {}),
           });
@@ -941,9 +960,14 @@ export function buildGuardedModelFetch(
         `[model-fetch] error provider=${model.provider} api=${model.api} model=${model.id} ` +
           `elapsedMs=${Date.now() - fetchStartedAt} ${summarizeError(remediatedError)}`,
       );
+      settleStartupDeadline();
       localServiceLease?.release();
       throw remediatedError;
     }
+    // Response headers arrived: release the startup deadline so the streaming
+    // body is bounded only by the guard's refreshable idle timer and the
+    // caller's base cancellation, not by the original one-shot timeout.
+    settleStartupDeadline();
     let response = result.response;
     emitModelTransportDebug(
       log,
