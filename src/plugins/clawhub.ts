@@ -1564,10 +1564,16 @@ export async function installPluginFromClawHub(
         },
       }),
     );
-    throwIfAborted();
     if (!installResult.ok) {
+      // Nothing was published, so a concurrent cancellation still owns the
+      // outcome instead of a validation or policy failure that lost the race.
+      throwIfAborted();
       return installResult;
     }
+    // A successful install may already be published on disk, and its record
+    // carries the deferred transaction that settles or rolls back a displaced
+    // package. Throwing on a late cancellation here would discard both, so the
+    // published result is returned for the caller to settle.
 
     const pkg = detail.package!;
     const clawpackFields = normalizeClawHubClawPackInstallFields(versionState.clawpack);

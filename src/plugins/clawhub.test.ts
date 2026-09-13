@@ -1641,6 +1641,37 @@ describe("installPluginFromClawHub", () => {
     expect(archiveCleanupMock).toHaveBeenCalledOnce();
   });
 
+  it.each(["install", "update"] as const)(
+    "settles a published %s when cancellation lands after publication",
+    async (mode) => {
+      const controller = new AbortController();
+      const reason = new Error("Gateway startup interrupted by SIGTERM");
+      installPluginFromArchiveMock.mockImplementationOnce(async () => {
+        // The archive installer resolves only once the replacement is published,
+        // so a cancellation observed here must not discard the settled result:
+        // its record carries the deferred transaction that commits or rolls
+        // back the displaced package.
+        controller.abort(reason);
+        return {
+          ok: true,
+          pluginId: "demo",
+          targetDir: "/tmp/openclaw/plugins/demo",
+          version: "2026.3.22",
+        };
+      });
+
+      const result = await installPluginFromClawHub({
+        spec: "clawhub:demo",
+        mode,
+        signal: controller.signal,
+      });
+
+      expect(controller.signal.aborted).toBe(true);
+      expectSuccessfulClawHubInstall(result);
+      expect(archiveCleanupMock).toHaveBeenCalledOnce();
+    },
+  );
+
   it("recovers version-specific compatibility from version endpoint when artifact metadata is sparse", async () => {
     parseClawHubPluginSpecMock.mockReturnValueOnce({ name: "demo", version: "2026.6.8" });
     resolveLatestVersionFromPackageMock.mockReturnValue("2026.6.10");
