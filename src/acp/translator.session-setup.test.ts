@@ -125,7 +125,7 @@ describe("acp session UX bridge behavior", () => {
     );
   });
 
-  it("keeps the Gateway-owned default for remote targets with an ambiguous local roster", async () => {
+  it("keeps the bare bridge key for remote targets with an ambiguous local roster", async () => {
     const sessionStore = createInMemorySessionStore();
     const agent = createAcpGatewayAgent(createAcpConnection(), createAcpGateway(), {
       skipAgentOwnerRosterValidation: true,
@@ -135,9 +135,27 @@ describe("acp session UX bridge behavior", () => {
 
     const result = await agent.newSession(createNewSessionRequest());
 
-    expect(sessionStore.getSession(result.sessionId)?.sessionKey).toMatch(
-      /^agent:main:acp-bridge:/,
-    );
+    // The remote Gateway owns owner resolution here: its sole agent may be
+    // neither `main` nor any local entry, so the key must stay unscoped.
+    expect(sessionStore.getSession(result.sessionId)?.sessionKey).toMatch(/^acp-bridge:/);
+  });
+
+  it("keeps the bare bridge key when the local sole owner is absent from a remote Gateway", async () => {
+    const sessionStore = createInMemorySessionStore();
+    const agent = createAcpGatewayAgent(createAcpConnection(), createAcpGateway(), {
+      skipAgentOwnerRosterValidation: true,
+      // The client's only agent is `ops`, but the remote Gateway may run a
+      // different roster (or a sole owner such as `research`), so the client
+      // must not prefix the key with a local identity.
+      config: {
+        agents: { ownership: "explicit", entries: { ops: {} } },
+      } satisfies OpenClawConfig,
+      sessionStore,
+    });
+
+    const result = await agent.newSession(createNewSessionRequest());
+
+    expect(sessionStore.getSession(result.sessionId)?.sessionKey).toMatch(/^acp-bridge:/);
   });
 
   it("preserves explicit session routing without an ambient owner", async () => {
