@@ -556,7 +556,9 @@ describe("OpenClaw MCP HTTP lifecycle adapters", () => {
       }
       response.writeHead(405).end();
     });
-    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", resolve);
+    });
     try {
       const address = server.address();
       if (!address || typeof address === "string") {
